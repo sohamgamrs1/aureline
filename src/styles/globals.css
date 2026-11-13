@@ -1,0 +1,183 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --ink: #0a0a0f;
+  --ink-deep: #07070b;
+  --gold: #d4af37;
+  --gold-soft: #f4e6bf;
+  --muted: #9ca3af;
+  --font-display: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--ink);
+  color: #f5f5f7;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: "cv11", "ss01";
+  min-height: 100dvh;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(212, 175, 55, 0.28);
+  color: #fff;
+}
+
+/* Thin, quiet scrollbar — the page should feel like paper, not a browser. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(212, 175, 55, 0.35);
+  background-clip: content-box;
+}
+
+@layer base {
+  h1,
+  h2,
+  h3,
+  .font-display {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+  }
+}
+
+@layer components {
+  /* The house card: dark glass, hairline gold edge, deep soft shadow. */
+  .card {
+    @apply relative overflow-hidden rounded-card border border-white/[0.07] bg-ink-850/80 shadow-soft backdrop-blur-xl;
+  }
+
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(
+      160deg,
+      rgba(255, 255, 255, 0.06) 0%,
+      rgba(255, 255, 255, 0.014) 42%,
+      rgba(255, 255, 255, 0) 70%
+    );
+    pointer-events: none;
+  }
+
+  .card-gold {
+    @apply relative overflow-hidden rounded-card border border-gold-400/20 bg-ink-850/80 shadow-gold backdrop-blur-xl;
+  }
+
+  .eyebrow {
+    @apply text-[10px] font-medium uppercase tracking-[0.34em] text-gold-400/85;
+  }
+
+  .gold-text {
+    background: linear-gradient(135deg, #fbf5e4 0%, #e0c576 38%, #d4af37 62%, #9e7b22 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
+  .btn-gold {
+    @apply relative inline-flex items-center justify-center gap-2 rounded-full bg-gold-sheen px-7 py-3.5 text-[13px] font-semibold uppercase tracking-[0.16em] text-ink-950 transition-all duration-300;
+    box-shadow: 0 14px 40px -16px rgba(212, 175, 55, 0.65), inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  }
+  .btn-gold:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 20px 50px -16px rgba(212, 175, 55, 0.8), inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  }
+  .btn-gold:active:not(:disabled) {
+    transform: translateY(0);
+  }
+  .btn-gold:disabled {
+    @apply cursor-not-allowed opacity-35;
+    box-shadow: none;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-full border border-white/[0.12] bg-white/[0.03] px-6 py-3 text-[12px] font-medium uppercase tracking-[0.16em] text-white/80 transition-all duration-300;
+  }
+  .btn-ghost:hover:not(:disabled) {
+    @apply border-gold-400/40 bg-gold-400/[0.07] text-white;
+  }
+  .btn-ghost:disabled {
+    @apply cursor-not-allowed opacity-35;
+  }
+
+  .hairline {
+    @apply h-px w-full bg-gold-line;
+  }
+
+  .stat-num {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+}
+
+@layer utilities {
+  /* Fine film grain, built from gradients only — no image URL for a bundler to
+     mistake for a module import. */
+  .grain::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.055;
+    background-image:
+      radial-gradient(rgba(255, 255, 255, 0.9) 0.5px, transparent 0.6px),
+      radial-gradient(rgba(255, 255, 255, 0.55) 0.5px, transparent 0.6px);
+    background-size: 3px 3px, 5px 5px;
+    background-position: 0 0, 1px 2px;
+  }
+
+  .mask-fade-b {
+    mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, black 55%, transparent 100%);
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .safe-b {
+    padding-bottom: max(env(safe-area-inset-bottom), 0px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
