@@ -110,6 +110,43 @@ export const METRIC_WEIGHTS: Record<MetricKey, number> = {
   skin: 0.1,
 };
 
+/**
+ * Tolerances, in the units of each measurement.
+ *
+ * These are the numbers that decide how harshly a face is read, and they were
+ * retuned after a real report: the previous set was wide enough that a genuinely
+ * weak face scored in the same band as a model. A metric now reaches zero when
+ * the deviation is roughly what separates the bottom third of faces from the
+ * middle, rather than the bottom few percent.
+ *
+ * Rules of thumb used to set them, from anthropometric spreads:
+ *   • symmetry   — mean mirror miss of 3.2% of face width is a visible asymmetry
+ *   • thirds     — 12% coefficient of variation is a clearly unbalanced split
+ *   • fifths     — 17% CV is where the outer fifths visibly overhang
+ *   • canthal    — 8° off the 5° ideal is a flat or sharply positive eye line
+ *   • FWHR       — 0.28 off 1.90 is a narrow or long face
+ */
+const TOL = {
+  symmetry: 0.045,
+  thirds: 0.20,
+  fifths: 0.24,
+  tiltCentre: 5,
+  tilt: 10,
+  fwhrCentre: 1.9,
+  fwhr: 0.36,
+  midfaceCentre: 1.0,
+  midface: 0.24,
+  goldenAspect: 0.6,
+  goldenMouthNose: 0.45,
+  goldenIntercanthal: 0.28,
+  goldenEye: 0.25,
+  jaw: 0.14,
+  gonial: 22,
+  chin: 0.09,
+  skinEvenness: 0.09,
+  skinExposure: 0.28,
+} as const;
+
 /* ------------------------------------------------------------------ */
 /* Small vector helpers                                                */
 /* ------------------------------------------------------------------ */
@@ -235,14 +272,22 @@ export function measure(
     ([a, b]) => dist(reflect(landmarks[a], brow, chin), landmarks[b])
   );
   const symmetryMiss = faceWidth > 0 ? mean(misses) / faceWidth : 0;
-  const symmetry = closeness2(symmetryMiss, 0.05);
+  const symmetry = closeness2(symmetryMiss, TOL.symmetry);
 
   /* --- 2. Facial thirds -------------------------------------------- */
-  const t1 = Math.abs(project(L(LM.glabella), brow, u) - project(brow, brow, u));
+  // Landmark 10 approximates the trichion (hairline), which MediaPipe estimates
+  // from face shape rather than detecting hair. On a high hairline, a receding
+  // one, or hair falling over the forehead it can sit well above the real
+  // hairline and inflate the top third. We cannot tell that apart from a
+  // genuinely long forehead, so the top third is capped rather than allowed to
+  // dominate: better to under-penalise a real forehead than to crush a score on
+  // a landmark we do not trust.
+  const t1Raw = Math.abs(project(L(LM.glabella), brow, u) - project(brow, brow, u));
   const t2 = Math.abs(project(L(LM.subnasale), brow, u) - project(L(LM.glabella), brow, u));
   const t3 = Math.abs(project(chin, brow, u) - project(L(LM.subnasale), brow, u));
+  const t1 = Math.min(t1Raw, 1.5 * ((t2 + t3) / 2));
   const thirdsVariation = coefficientOfVariation([t1, t2, t3]);
-  const thirds = closeness2(thirdsVariation, 0.22);
+  const thirds = closeness2(thirdsVariation, TOL.thirds);
   const lowerThirdShare = t1 + t2 + t3 > 0 ? t3 / (t1 + t2 + t3) : 1 / 3;
 
   /* --- 3. Facial fifths -------------------------------------------- */
@@ -257,7 +302,7 @@ export function measure(
   const projected = fifthPoints.map((p) => project(p, brow, h));
   const fifthsSegments = projected.slice(1).map((v, i) => Math.abs(v - projected[i]));
   const fifthsVariation = coefficientOfVariation(fifthsSegments);
-  const fifths = closeness2(fifthsVariation, 0.3);
+  const fifths = closeness2(fifthsVariation, TOL.fifths);
 
   /* --- 4. Canthal tilt (roll-corrected) ---------------------------- */
   // Angle of the inner→outer corner vector against the head's horizontal axis.
@@ -278,19 +323,19 @@ export function measure(
   // Sub-degree values are measurement noise, not a feature: snap them to neutral.
   if (Math.abs(canthalTiltDeg) < 1) canthalTiltDeg = 0;
   // A gently positive tilt reads as the most harmonious; ±12° is the tolerance.
-  const canthalTilt = closeness2(canthalTiltDeg - 5, 12);
+  const canthalTilt = closeness2(canthalTiltDeg - TOL.tiltCentre, TOL.tilt);
 
   /* --- 5. FWHR ----------------------------------------------------- */
   const upperFaceHeight = dist(L(LM.nasion), L(LM.upperLip));
   const fwhrValue = upperFaceHeight > 0 ? faceWidth / upperFaceHeight : 0;
-  const fwhr = closeness2(fwhrValue - 1.9, 0.5);
+  const fwhr = closeness2(fwhrValue - TOL.fwhrCentre, TOL.fwhr);
 
   /* --- 6. Midface ratio -------------------------------------------- */
   const pupilMid = midpoint(L(LM.irisRight), L(LM.irisLeft));
   const interpupillary = dist(L(LM.irisRight), L(LM.irisLeft));
   const midfaceHeight = dist(pupilMid, L(LM.upperLip));
   const midfaceValue = midfaceHeight > 0 ? interpupillary / midfaceHeight : 0;
-  const midface = closeness2(midfaceValue - 1.0, 0.28);
+  const midface = closeness2(midfaceValue - TOL.midfaceCentre, TOL.midface);
 
   /* --- 7. Golden-ratio proximity ----------------------------------- */
   // Four classic canons, each scored on its own tolerance, then averaged. No
@@ -310,10 +355,10 @@ export function measure(
   const faceAspectRatio = faceWidth > 0 ? faceHeight / faceWidth : 0;
 
   const goldenParts = [
-    closeness2(faceAspectRatio - 1.62, 0.75),
-    closeness2(mouthNoseRatio - 1.618, 0.55),
-    closeness2(intercanthalNoseRatio - 1.0, 0.35),
-    closeness2(eyeIntercanthalRatio - 1.0, 0.3),
+    closeness2(faceAspectRatio - 1.62, TOL.goldenAspect),
+    closeness2(mouthNoseRatio - 1.618, TOL.goldenMouthNose),
+    closeness2(intercanthalNoseRatio - 1.0, TOL.goldenIntercanthal),
+    closeness2(eyeIntercanthalRatio - 1.0, TOL.goldenEye),
   ];
   const goldenValue = mean(goldenParts);
   const goldenRatio = clamp01(goldenValue);
@@ -331,14 +376,15 @@ export function measure(
   const gonialAngleDeg = angleAt(L(LM.faceEdgeRight), L(LM.jawRight), chin);
 
   const definition = clamp01(
-    0.5 * closeness2(jawRatio - 0.8, 0.16) +
-      0.3 * closeness2(gonialAngleDeg - 145, 25) +
-      0.2 * closeness2(chinRatio - 0.33, 0.1)
+    0.5 * closeness2(jawRatio - 0.8, TOL.jaw) +
+      0.3 * closeness2(gonialAngleDeg - 145, TOL.gonial) +
+      0.2 * closeness2(chinRatio - 0.33, TOL.chin)
   );
 
   /* --- 9. Skin quality --------------------------------------------- */
   const skinScore = clamp01(
-    0.55 * closeness2(skin.variance, 0.11) + 0.45 * closeness2(skin.luminance - 0.6, 0.34)
+    0.55 * closeness2(skin.variance, TOL.skinEvenness) +
+      0.45 * closeness2(skin.luminance - 0.6, TOL.skinExposure)
   );
 
   return {
@@ -395,12 +441,26 @@ export type ScoreBundle = {
 /** Score10 = Σ(metric × weight) × 10 across the nine scored metrics. */
 export function scoreFromMetrics(metrics: MetricSet, raw: RawMeasurements): ScoreBundle {
   const keys = Object.keys(METRIC_WEIGHTS) as MetricKey[];
-  const weighted = keys.reduce(
-    (sum, key) => sum + clamp01(metrics[key] ?? 0) * METRIC_WEIGHTS[key],
-    0
-  );
+  const values = keys.map((key) => clamp01(metrics[key] ?? 0));
 
-  const overall = clamp(weighted * 10, 0, 10);
+  const weighted = keys.reduce((sum, key, i) => sum + values[i] * METRIC_WEIGHTS[key], 0);
+
+  // A plain weighted mean hides a weak feature: five metrics at 0.95 and four at
+  // 0.45 still average to 0.72, which is why a face with obvious problems could
+  // read like a model. Two corrections:
+  //
+  //  1. Blend in the weighted harmonic mean, which is pulled toward the low end
+  //     instead of letting strong metrics carry weak ones.
+  //  2. Apply a "failo" factor — a face is limited by its worst feature, so a
+  //     metric well below the pack drags the whole read down.
+  const harmonic =
+    1 / keys.reduce((sum, key, i) => sum + METRIC_WEIGHTS[key] / Math.max(values[i], 0.04), 0);
+  const blended = 0.7 * weighted + 0.3 * harmonic;
+
+  const weakest = Math.min(...values);
+  const failoFactor = 0.72 + 0.28 * Math.min(1, weakest / 0.4);
+
+  const overall = clamp(blended * failoFactor * 10, 0, 10);
   const psl = toPsl(overall);
 
   // Potential: what a consistent routine could add. Skin evenness, lighting and
