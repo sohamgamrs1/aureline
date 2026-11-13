@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import ScoreCircle from "@/components/ScoreCircle";
 import MetricBar from "@/components/MetricBar";
+import Diagnostics from "@/components/Diagnostics";
 import { drawOverlay } from "@/lib/mediapipe";
 import { addHistory, clearSession, getSession } from "@/lib/storage";
 import { rankLevers } from "@/lib/routine";
@@ -360,6 +361,13 @@ export default function ResultPage() {
           11%, golden ratio 11%, skin 10%, fifths 9%, width-to-height 9% and midface 8%.
         </p>
       </section>
+
+      <Diagnostics
+        metrics={session.metrics}
+        raw={session.raw}
+        overall={session.overall}
+        psl={session.psl}
+      />
 
       {/* breakdown */}
       <section className="mt-6">
