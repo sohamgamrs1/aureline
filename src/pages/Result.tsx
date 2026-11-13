@@ -145,21 +145,61 @@ export default function ResultPage() {
   const delta = session.potential - session.overall;
 
   const bars = [
-    { label: "Symmetry", value: pct(session.metrics.symmetry), readout: `${(raw.symmetryMiss * 100).toFixed(1)}% off` },
-    { label: "Facial Thirds", value: pct(session.metrics.thirds), readout: `±${(raw.thirdsVariation * 100).toFixed(1)}%` },
-    { label: "Facial Fifths", value: pct(session.metrics.fifths), readout: `±${(raw.fifthsVariation * 100).toFixed(1)}%` },
-    { label: "Canthal Tilt", value: pct(session.metrics.canthalTilt), readout: `${raw.canthalTiltDeg.toFixed(1)}°` },
-    { label: "Width ÷ Height", value: pct(session.metrics.fwhr), readout: raw.fwhrValue.toFixed(2) },
-    { label: "Midface", value: pct(session.metrics.midface), readout: raw.midfaceValue.toFixed(2) },
     {
-      label: "Jawline",
-      value: pct(session.breakdown.find((c) => c.key === "jawline")!.score / 100),
-      readout: raw.jawRatio.toFixed(2),
+      label: "Symmetry",
+      value: pct(session.metrics.symmetry),
+      readout: `${(raw.symmetryMiss * 100).toFixed(1)}% off`,
+    },
+    {
+      label: "Facial Thirds",
+      value: pct(session.metrics.thirds),
+      readout: `±${(raw.thirdsVariation * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Facial Fifths",
+      value: pct(session.metrics.fifths),
+      readout: `±${(raw.fifthsVariation * 100).toFixed(1)}%`,
+    },
+    {
+      label: "Canthal Tilt",
+      value: pct(session.metrics.canthalTilt),
+      readout: `${raw.canthalTiltDeg.toFixed(1)}°`,
+    },
+    {
+      label: "Width ÷ Height",
+      value: pct(session.metrics.fwhr),
+      readout: raw.fwhrValue.toFixed(2),
+    },
+    {
+      label: "Midface",
+      value: pct(session.metrics.midface),
+      readout: raw.midfaceValue.toFixed(2),
+    },
+    {
+      label: "Golden Ratio",
+      value: pct(session.metrics.goldenRatio),
+      readout: raw.mouthNoseRatio.toFixed(2),
+    },
+    {
+      label: "Bone Structure",
+      value: pct(session.metrics.definition),
+      readout: `${Math.round(raw.gonialAngleDeg)}°`,
     },
     {
       label: "Skin Quality",
-      value: pct(session.breakdown.find((c) => c.key === "skinQuality")!.score / 100),
+      value: pct(session.metrics.skin),
       readout: `${Math.round(raw.skinLuminance * 100)}% lit`,
+    },
+    {
+      label: "Harmony",
+      value: pct(
+        (session.metrics.symmetry +
+          session.metrics.thirds +
+          session.metrics.fifths +
+          session.metrics.goldenRatio) /
+          4
+      ),
+      readout: raw.faceAspectRatio.toFixed(2),
     },
   ];
 
@@ -316,8 +356,8 @@ export default function ResultPage() {
           ))}
         </div>
         <p className="mt-7 border-t border-white/[0.07] pt-4 text-[11px] leading-relaxed text-muted/45">
-          The overall score blends symmetry 30%, thirds 25%, fifths 20%, canthal tilt 15%
-          and width-to-height 10%. Midface is reported but not weighted.
+          The overall score blends symmetry 16%, bone structure 14%, thirds 12%, canthal tilt
+          11%, golden ratio 11%, skin 10%, fifths 9%, width-to-height 9% and midface 8%.
         </p>
       </section>
 
@@ -326,7 +366,7 @@ export default function ResultPage() {
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <h2 className="font-display text-2xl text-white/95">Detailed breakdown</h2>
           <p className="text-[10px] uppercase tracking-[0.2em] text-muted/45">
-            Eight readings · one tip each
+            Ten readings · one tip each
           </p>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
