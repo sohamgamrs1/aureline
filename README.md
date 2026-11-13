@@ -185,30 +185,53 @@ closeness = clamp01(1 - (deviation / tolerance)²)
 
 `Score10 = Σ(metric × weight) × 10`, `PSL = 1 + (Score10 / 10) × 7`.
 
-### Why the curve is quadratic, and why the weights changed
+### Calibration: how the curve was tuned
 
-The first build scored each ratio with a **linear** falloff, `1 - |dev| / tol`.
-That punishes every millimetre equally, and because no real face is perfectly
-symmetric or perfectly thirds-divided, it compressed everyone into a narrow 4–6
-strip: a genuinely strong face still carries a few percent of natural asymmetry
-and landed mid-scale. Squaring the falloff keeps small deviations near full
-marks and only bites once a face is visibly off, so the scale spreads from ~3 to
-~9.5 instead of bunching in the middle.
+Two complaints drove this, in opposite directions, and both are now pinned by
+assertions in `npm test`.
 
-The weights also shifted away from a pure-proportion model. Symmetry and thirds
-tell you a face is *balanced*; they do not tell you it is *striking*. Angularity
-(Bone Structure) and canon proximity (Golden Ratio) are what separate the two,
-so together they now carry 25% of the score.
+**First**, faces that read as PSL 6+ were coming out mid-scale. The original
+scored each ratio with a linear falloff, `1 - |dev| / tol`, which punishes every
+millimetre equally; since no real face is perfectly symmetric or perfectly
+thirds-divided, everyone compressed into a 4–6 strip.
 
-`npm test` prints the resulting calibration curve and asserts it:
+**Then**, after loosening it, a genuinely weak face scored in the same band as a
+model. The scale was discriminating in neither direction — everything read alike.
+
+Three things fixed it:
+
+1. **Quadratic falloff** — `1 - (dev/tol)²` keeps small deviations near full
+   marks and only bites once a face is visibly off.
+2. **Tolerances set at population spread, not at zero** — see the `TOL` table at
+   the top of `src/lib/scoring.ts`. A metric reaches zero when the deviation is
+   roughly what separates the bottom third of faces from the middle, not the
+   bottom few percent.
+3. **Failo-aware aggregation** — a plain weighted mean hides a weak feature: five
+   metrics at 0.95 and four at 0.45 still average 0.72. The overall score now
+   blends in a weighted harmonic mean (pulled toward the low end) and applies a
+   factor for the weakest metric, because a face is limited by its worst feature.
+
+The resulting curve, asserted by `npm test`:
 
 ```
-q=0.00  overall 9.84  PSL 7.9  Chad
-q=0.35  overall 8.79  PSL 7.2  Chad
-q=0.50  overall 7.83  PSL 6.5  Chadlite
-q=0.70  overall 6.35  PSL 5.4  HTN
-q=1.00  overall 3.69  PSL 3.6  LTN
+q=0.00  overall 9.75  PSL 7.8  Chad
+q=0.20  overall 9.14  PSL 7.4  Chad
+q=0.35  overall 8.20  PSL 6.7  Chadlite
+q=0.50  overall 7.03  PSL 5.9  HTN
+q=0.70  overall 4.27  PSL 4.0  MTN
+q=1.00  overall 1.53  PSL 2.1  Developing
 ```
+
+Two regression guards sit on top: a model-quality face must clear PSL 6, a weak
+face must fall below 3, and the two must be at least 4 points apart. If the top
+of the scale ever saturates again, the suite fails.
+
+**One robustness note.** Landmark 10 approximates the trichion (hairline), which
+MediaPipe estimates from face shape rather than detecting hair. On a high or
+receding hairline it can sit well above the real hairline and inflate the top
+third. Since that is indistinguishable from a genuinely long forehead, the top
+third is capped at 1.5× the mean of the other two — better to under-penalise a
+real forehead than to crush a score on a landmark we do not trust.
 
 **What Bone Structure does and does not measure.** A frontal 2D photo supports
 jaw breadth, the gonial angle and chin proportion. It does **not** support
