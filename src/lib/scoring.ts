@@ -11,17 +11,16 @@
  * all angle maths in this file assumes pixel space.
  *
  * ── Calibration ──────────────────────────────────────────────────────────
- * Each ratio is scored with a quadratic closeness curve:
+ * Each ratio is scored with an exponential curve, fitted to real measurements:
  *
- *   closeness(deviation, tolerance) = clamp01(1 - (deviation / tolerance)²)
+ *   closeness(deviation, scale) = clamp01(exp(-|deviation| / scale))
  *
- * The quadratic (rather than linear) falloff is deliberate. A linear curve
- * punishes every millimetre equally, which compresses real faces into the 4–6
- * band: a genuinely strong face still carries a few percent of natural
- * asymmetry and lands mid-scale. Squaring keeps small deviations near full
- * marks and only bites once a face is visibly off, so the scale spreads across
- * 3–9.5 instead of bunching in the middle. `scripts/selftest.ts` pins the
- * resulting distribution.
+ * See the SCALE table below for how the scales were derived. A bounded curve
+ * (linear or quadratic) reaches zero at its tolerance; real deviations run 3–5×
+ * larger than an idealised face suggests, so everything clamped to zero and the
+ * scale stopped discriminating. Exponential decay preserves the ordering all
+ * the way down. `scripts/selftest.ts` pins the distribution against the measured
+ * sample in `scripts/fixtures/real-faces.json`.
  */
 
 import type {
@@ -111,40 +110,46 @@ export const METRIC_WEIGHTS: Record<MetricKey, number> = {
 };
 
 /**
- * Tolerances, in the units of each measurement.
+ * Deviation scales, fitted to real measurements.
  *
- * These are the numbers that decide how harshly a face is read, and they were
- * retuned after a real report: the previous set was wide enough that a genuinely
- * weak face scored in the same band as a model. A metric now reaches zero when
- * the deviation is roughly what separates the bottom third of faces from the
- * middle, rather than the bottom few percent.
+ * These were not guessed. Nine portrait photographs were measured end to end
+ * through this exact pipeline, and each scale is set so the median real
+ * deviation scores 0.55 — i.e. scale = median / 0.598, from exp(-1/0.598)≈0.55.
  *
- * Rules of thumb used to set them, from anthropometric spreads:
- *   • symmetry   — mean mirror miss of 3.2% of face width is a visible asymmetry
- *   • thirds     — 12% coefficient of variation is a clearly unbalanced split
- *   • fifths     — 17% CV is where the outer fifths visibly overhang
- *   • canthal    — 8° off the 5° ideal is a flat or sharply positive eye line
- *   • FWHR       — 0.28 off 1.90 is a narrow or long face
+ * The numbers that came back are worth knowing, because they are far larger than
+ * a synthetic "ideal" face suggests:
+ *
+ *   symmetry miss    median 8.7% of face width   (a perfect face is 0%)
+ *   thirds CV        median 28.9%                (equal thirds are 0%)
+ *   fifths CV        median 25.2%
+ *
+ * An earlier version used tolerances derived from a synthetic face — 4.5% and
+ * 20% — so every real photo hit zero on symmetry and thirds, the failo factor
+ * bottomed out, and every face landed in a narrow 2–4 band regardless of how it
+ * looked. Fitting to measured data is the only thing that fixed it.
+ *
+ * Re-fit these if the measurement method changes. `scripts/fixtures/real-faces.json`
+ * holds the raw measurements used, and `npm test` asserts the resulting spread.
  */
-const TOL = {
-  symmetry: 0.045,
-  thirds: 0.20,
-  fifths: 0.24,
+const SCALE = {
+  symmetry: 0.1451,
+  thirds: 0.4828,
+  fifths: 0.4208,
   tiltCentre: 5,
-  tilt: 10,
+  tilt: 3.6599,
   fwhrCentre: 1.9,
-  fwhr: 0.36,
+  fwhr: 0.2393,
   midfaceCentre: 1.0,
-  midface: 0.24,
-  goldenAspect: 0.6,
-  goldenMouthNose: 0.45,
-  goldenIntercanthal: 0.28,
-  goldenEye: 0.25,
-  jaw: 0.14,
-  gonial: 22,
-  chin: 0.09,
-  skinEvenness: 0.09,
-  skinExposure: 0.28,
+  midface: 0.1256,
+  goldenAspect: 0.7186,
+  goldenMouthNose: 0.3929,
+  goldenIntercanthal: 0.3691,
+  goldenEye: 0.3462,
+  jaw: 0.0509,
+  gonial: 19.9409,
+  chin: 0.1147,
+  skinEvenness: 0.1309,
+  skinExposure: 0.1741,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -162,14 +167,25 @@ export const closeness = (deviation: number, tolerance: number) =>
   clamp01(1 - Math.abs(deviation) / tolerance);
 
 /**
- * The scoring curve actually used everywhere: quadratic falloff.
- * Small deviations stay near full marks; the penalty accelerates once a
- * deviation is a meaningful fraction of the tolerance.
+ * Quadratic closeness — retained for comparison and for the curve tests.
+ * Not used by the scorer any more.
  */
 export const closeness2 = (deviation: number, tolerance: number) => {
   const t = Math.abs(deviation) / tolerance;
   return clamp01(1 - t * t);
 };
+
+/**
+ * The curve the scorer actually uses: exponential decay, `exp(-|dev| / scale)`.
+ *
+ * A bounded curve (linear or quadratic) reaches exactly zero at the tolerance,
+ * which is fatal once real deviations are 3–5× larger than an idealised face
+ * suggests: everything clamps to zero and the scale stops discriminating. An
+ * exponential never reaches zero, so a weak face still separates from a worse
+ * one, and the ordering is preserved all the way down.
+ */
+export const closenessExp = (deviation: number, scale: number) =>
+  clamp01(Math.exp(-Math.abs(deviation) / scale));
 
 const dist = (a: Pixel, b: Pixel) => Math.hypot(a.x - b.x, a.y - b.y);
 const midpoint = (a: Pixel, b: Pixel): Pixel => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
@@ -272,7 +288,7 @@ export function measure(
     ([a, b]) => dist(reflect(landmarks[a], brow, chin), landmarks[b])
   );
   const symmetryMiss = faceWidth > 0 ? mean(misses) / faceWidth : 0;
-  const symmetry = closeness2(symmetryMiss, TOL.symmetry);
+  const symmetry = closenessExp(symmetryMiss, SCALE.symmetry);
 
   /* --- 2. Facial thirds -------------------------------------------- */
   // Landmark 10 approximates the trichion (hairline), which MediaPipe estimates
@@ -287,7 +303,7 @@ export function measure(
   const t3 = Math.abs(project(chin, brow, u) - project(L(LM.subnasale), brow, u));
   const t1 = Math.min(t1Raw, 1.5 * ((t2 + t3) / 2));
   const thirdsVariation = coefficientOfVariation([t1, t2, t3]);
-  const thirds = closeness2(thirdsVariation, TOL.thirds);
+  const thirds = closenessExp(thirdsVariation, SCALE.thirds);
   const lowerThirdShare = t1 + t2 + t3 > 0 ? t3 / (t1 + t2 + t3) : 1 / 3;
 
   /* --- 3. Facial fifths -------------------------------------------- */
@@ -302,7 +318,7 @@ export function measure(
   const projected = fifthPoints.map((p) => project(p, brow, h));
   const fifthsSegments = projected.slice(1).map((v, i) => Math.abs(v - projected[i]));
   const fifthsVariation = coefficientOfVariation(fifthsSegments);
-  const fifths = closeness2(fifthsVariation, TOL.fifths);
+  const fifths = closenessExp(fifthsVariation, SCALE.fifths);
 
   /* --- 4. Canthal tilt (roll-corrected) ---------------------------- */
   // Angle of the inner→outer corner vector against the head's horizontal axis.
@@ -323,19 +339,19 @@ export function measure(
   // Sub-degree values are measurement noise, not a feature: snap them to neutral.
   if (Math.abs(canthalTiltDeg) < 1) canthalTiltDeg = 0;
   // A gently positive tilt reads as the most harmonious; ±12° is the tolerance.
-  const canthalTilt = closeness2(canthalTiltDeg - TOL.tiltCentre, TOL.tilt);
+  const canthalTilt = closenessExp(canthalTiltDeg - SCALE.tiltCentre, SCALE.tilt);
 
   /* --- 5. FWHR ----------------------------------------------------- */
   const upperFaceHeight = dist(L(LM.nasion), L(LM.upperLip));
   const fwhrValue = upperFaceHeight > 0 ? faceWidth / upperFaceHeight : 0;
-  const fwhr = closeness2(fwhrValue - TOL.fwhrCentre, TOL.fwhr);
+  const fwhr = closenessExp(fwhrValue - SCALE.fwhrCentre, SCALE.fwhr);
 
   /* --- 6. Midface ratio -------------------------------------------- */
   const pupilMid = midpoint(L(LM.irisRight), L(LM.irisLeft));
   const interpupillary = dist(L(LM.irisRight), L(LM.irisLeft));
   const midfaceHeight = dist(pupilMid, L(LM.upperLip));
   const midfaceValue = midfaceHeight > 0 ? interpupillary / midfaceHeight : 0;
-  const midface = closeness2(midfaceValue - TOL.midfaceCentre, TOL.midface);
+  const midface = closenessExp(midfaceValue - SCALE.midfaceCentre, SCALE.midface);
 
   /* --- 7. Golden-ratio proximity ----------------------------------- */
   // Four classic canons, each scored on its own tolerance, then averaged. No
@@ -355,10 +371,10 @@ export function measure(
   const faceAspectRatio = faceWidth > 0 ? faceHeight / faceWidth : 0;
 
   const goldenParts = [
-    closeness2(faceAspectRatio - 1.62, TOL.goldenAspect),
-    closeness2(mouthNoseRatio - 1.618, TOL.goldenMouthNose),
-    closeness2(intercanthalNoseRatio - 1.0, TOL.goldenIntercanthal),
-    closeness2(eyeIntercanthalRatio - 1.0, TOL.goldenEye),
+    closenessExp(faceAspectRatio - 1.62, SCALE.goldenAspect),
+    closenessExp(mouthNoseRatio - 1.618, SCALE.goldenMouthNose),
+    closenessExp(intercanthalNoseRatio - 1.0, SCALE.goldenIntercanthal),
+    closenessExp(eyeIntercanthalRatio - 1.0, SCALE.goldenEye),
   ];
   const goldenValue = mean(goldenParts);
   const goldenRatio = clamp01(goldenValue);
@@ -376,15 +392,15 @@ export function measure(
   const gonialAngleDeg = angleAt(L(LM.faceEdgeRight), L(LM.jawRight), chin);
 
   const definition = clamp01(
-    0.5 * closeness2(jawRatio - 0.8, TOL.jaw) +
-      0.3 * closeness2(gonialAngleDeg - 145, TOL.gonial) +
-      0.2 * closeness2(chinRatio - 0.33, TOL.chin)
+    0.5 * closenessExp(jawRatio - 0.8, SCALE.jaw) +
+      0.3 * closenessExp(gonialAngleDeg - 145, SCALE.gonial) +
+      0.2 * closenessExp(chinRatio - 0.33, SCALE.chin)
   );
 
   /* --- 9. Skin quality --------------------------------------------- */
   const skinScore = clamp01(
-    0.55 * closeness2(skin.variance, TOL.skinEvenness) +
-      0.45 * closeness2(skin.luminance - 0.6, TOL.skinExposure)
+    0.55 * closenessExp(skin.variance, SCALE.skinEvenness) +
+      0.45 * closenessExp(skin.luminance - 0.6, SCALE.skinExposure)
   );
 
   return {
@@ -692,6 +708,71 @@ export function buildBreakdown(
       ),
       tip: "Shoot at 2× zoom from a step back. Wide lenses distort harmony the most.",
     },
+  ];
+}
+
+/* ------------------------------------------------------------------ */
+/* Explanation                                                         */
+/* ------------------------------------------------------------------ */
+
+export type MetricExplanation = {
+  key: MetricKey;
+  label: string;
+  /** The measured value, in its own units. */
+  value: number;
+  /** What the ideal value would be, in the same units. */
+  ideal: number;
+  /** value - ideal, in the same units. */
+  deviation: number;
+  /** The tolerance this deviation is judged against. */
+  tolerance: number;
+  /** deviation / tolerance — how much of the budget was used. */
+  ratio: number;
+  /** 0..1 after the closeness curve. */
+  score: number;
+  unit: "ratio" | "percent" | "degrees";
+};
+
+/**
+ * Every metric with the numbers behind it, for the diagnostics panel.
+ *
+ * This exists so calibration can be done from real measurements instead of
+ * guesswork: if a model and an average face both land near 4, the panel shows
+ * which metric is pinned and by how much.
+ */
+export function explain(metrics: MetricSet, raw: RawMeasurements): MetricExplanation[] {
+  const row = (
+    key: MetricKey,
+    label: string,
+    value: number,
+    ideal: number,
+    tolerance: number,
+    unit: MetricExplanation["unit"]
+  ): MetricExplanation => {
+    const deviation = value - ideal;
+    return {
+      key,
+      label,
+      value,
+      ideal,
+      deviation,
+      tolerance,
+      ratio: tolerance === 0 ? 0 : Math.abs(deviation) / tolerance,
+      score: clamp01(metrics[key] ?? 0),
+      unit,
+    };
+  };
+
+  return [
+    row("symmetry", "Symmetry", raw.symmetryMiss, 0, SCALE.symmetry, "percent"),
+    row("thirds", "Facial thirds", raw.thirdsVariation, 0, SCALE.thirds, "percent"),
+    row("fifths", "Facial fifths", raw.fifthsVariation, 0, SCALE.fifths, "percent"),
+    row("canthalTilt", "Canthal tilt", raw.canthalTiltDeg, SCALE.tiltCentre, SCALE.tilt, "degrees"),
+    row("fwhr", "Width ÷ height", raw.fwhrValue, SCALE.fwhrCentre, SCALE.fwhr, "ratio"),
+    row("midface", "Midface", raw.midfaceValue, SCALE.midfaceCentre, SCALE.midface, "ratio"),
+    row("goldenRatio", "Golden ratio", raw.goldenValue, 1, 1, "ratio"),
+    row("definition", "Bone structure", raw.jawRatio, 0.8, SCALE.jaw, "ratio"),
+    row("skin", "Skin evenness", raw.skinVariance, 0, SCALE.skinEvenness, "percent"),
   ];
 }
 
