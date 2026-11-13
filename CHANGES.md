@@ -1,61 +1,71 @@
-# Aureline — changed files (v5)
+# Aureline — changed files (v6)
 
-Drop these over your existing project root. No new dependency, no config change.
+Drop these over your project root. No new dependency.
 
 | File | Change |
 | --- | --- |
-| `src/lib/scoring.ts` | Tolerance table `TOL`, failo-aware aggregation, hairline cap on the top third. |
-| `scripts/selftest.ts` | Calibration assertions rewritten for the new curve. |
-| `README.md` | Documents the retuning. |
+| `src/lib/scoring.ts` | `TOL` → `SCALE`, fitted to measured faces. Exponential curve. |
+| `scripts/selftest.ts` | Asserts the distribution of the measured sample. |
+| `scripts/fixtures/real-faces.json` | **New** — raw measurements from 9 real portraits (numbers only). |
+| `src/components/Diagnostics.tsx` | **New** — the diagnostics panel. |
+| `src/pages/Result.tsx` | Renders the panel. |
+| `README.md` | Documents the fitting. |
 
-## What was wrong
+## Why every face scored about the same
 
-After v4 the scale stopped discriminating: a weak face and a model landed in the
-same band. Two causes.
+I measured nine portrait photographs end to end through the pipeline instead of
+guessing again. The result was unambiguous:
 
-**Tolerances were too wide.** They had been opened up to fix the earlier "good
-faces score low" complaint, and went too far — most real deviations sat at only
-20–40% of tolerance, where the quadratic curve still awards 0.85–0.95. Every
-metric read high, so every face read high.
+| Deviation | Synthetic assumption | Median of real faces |
+| --- | --- | --- |
+| Symmetry miss | 1.2% of face width | **8.7%** |
+| Thirds CV | 5% | **28.9%** |
+| Fifths CV | 8% | **25.2%** |
 
-**Averaging hid weak features.** A plain weighted mean of nine metrics lets
-strong ones carry weak ones: five at 0.95 and four at 0.45 still average 0.72.
+Real deviations are 3–5× larger than the tolerances assumed. With a bounded
+curve, symmetry and thirds therefore scored **exactly 0 on every photo** — the
+failo factor bottomed out and everything collapsed into a 2–4 band, which is why
+a model and an average face read the same.
 
 ## What changed
 
-1. **`TOL` table** — tolerances retuned to population spread. Symmetry 0.045
-   (was 0.05), thirds 0.20 (was 0.22), fifths 0.24 (was 0.30), canthal tilt ±10°
-   (was ±12°), FWHR 0.36 (was 0.50), midface 0.24 (was 0.28), plus the golden,
-   bone-structure and skin tolerances. All in one place now instead of scattered
-   through `measure()`.
+1. **Exponential curve.** `exp(-|dev| / scale)` instead of `1 - (dev/tol)²`. A
+   bounded curve reaches zero at its tolerance; once real deviations exceed it,
+   the ordering is lost. Exponential decay preserves it.
 
-2. **Failo-aware aggregation.** The overall score is
-   `0.7 × weightedMean + 0.3 × weightedHarmonic`, then multiplied by
-   `0.72 + 0.28 × min(1, weakest / 0.4)`. One clearly weak metric now drags the
-   whole read down, which is how a face is actually judged.
+2. **`SCALE` fitted to the data.** Each value is `median real deviation / 0.598`,
+   so the median face scores 0.55 on that metric:
 
-3. **Hairline cap.** The top third is capped at 1.5× the mean of the other two,
-   so a mis-estimated trichion (landmark 10) cannot zero out the thirds score and
-   cascade through the failo factor.
+   ```
+   symmetry 0.1451   thirds 0.4828   fifths 0.4208   tilt 3.6599
+   fwhr 0.2393       midface 0.1256  golden 0.7186/0.3929/0.3691/0.3462
+   jaw 0.0509        gonial 19.94    chin 0.1147     skin 0.1309/0.1741
+   ```
 
-## The resulting curve
+3. **Diagnostics panel** on the result screen — every measurement, its ideal, its
+   deviation as a multiple of scale, and its score. Copyable as text.
+
+## Effect on the same nine photos
 
 ```
-q=0.00  overall 9.75  PSL 7.8  Chad
-q=0.20  overall 9.14  PSL 7.4  Chad
-q=0.35  overall 8.20  PSL 6.7  Chadlite
-q=0.50  overall 7.03  PSL 5.9  HTN
-q=0.70  overall 4.27  PSL 4.0  MTN
-q=1.00  overall 1.53  PSL 2.1  Developing
+before:  1.52 .. 4.01   sd 0.66   (symmetry and thirds pinned at 0)
+after:   3.16 .. 6.66   sd 1.12
 ```
 
-Guards now asserted: a model-quality face clears PSL 6, a weak face falls below
-3, and the two are at least 4 points apart. If the top of the scale saturates
-again, `npm test` fails.
+`npm test` now loads those measurements and asserts range ≥ 2.5 and sd ≥ 0.8, so
+this cannot silently regress.
+
+## Honest limitation
+
+Nine photos is a small sample, and they are ordinary portraits rather than a
+rated population. The scale is now anchored to real measurements instead of an
+ideal, which is the important part — but if you send diagnostics from a handful
+of faces you consider clearly above and clearly below average, the scales can be
+fitted to *your* reference points in one pass. That is what the panel is for.
 
 ## Verify
 
 ```bash
 npm run build
-npm test      # prints the curve and asserts both ends
+npm test
 ```

@@ -185,53 +185,43 @@ closeness = clamp01(1 - (deviation / tolerance)²)
 
 `Score10 = Σ(metric × weight) × 10`, `PSL = 1 + (Score10 / 10) × 7`.
 
-### Calibration: how the curve was tuned
+### Calibration: fitted to measured faces, not guessed
 
-Two complaints drove this, in opposite directions, and both are now pinned by
-assertions in `npm test`.
+The scale went through three failed tunings before this one. Each fixed one
+symptom and broke another, because each was tuned against a *synthetic* idea of
+a face rather than against measurements.
 
-**First**, faces that read as PSL 6+ were coming out mid-scale. The original
-scored each ratio with a linear falloff, `1 - |dev| / tol`, which punishes every
-millimetre equally; since no real face is perfectly symmetric or perfectly
-thirds-divided, everyone compressed into a 4–6 strip.
+What the measurements actually showed — nine portrait photographs run end to end
+through this pipeline:
 
-**Then**, after loosening it, a genuinely weak face scored in the same band as a
-model. The scale was discriminating in neither direction — everything read alike.
+| Deviation | Assumed by the synthetic model | Median of real faces |
+| --- | --- | --- |
+| Symmetry miss | 1.2% of face width | **8.7%** |
+| Thirds CV | 5% | **28.9%** |
+| Fifths CV | 8% | **25.2%** |
 
-Three things fixed it:
+Real deviations are 3–5× larger than the idealised face implied. With a bounded
+curve (`1 - |dev|/tol`, or its square) everything clamped to **zero**: symmetry
+and thirds scored 0 on every photo, the failo factor bottomed out, and every face
+— model or not — landed in the same narrow 2–4 band.
 
-1. **Quadratic falloff** — `1 - (dev/tol)²` keeps small deviations near full
-   marks and only bites once a face is visibly off.
-2. **Tolerances set at population spread, not at zero** — see the `TOL` table at
-   the top of `src/lib/scoring.ts`. A metric reaches zero when the deviation is
-   roughly what separates the bottom third of faces from the middle, not the
-   bottom few percent.
-3. **Failo-aware aggregation** — a plain weighted mean hides a weak feature: five
-   metrics at 0.95 and four at 0.45 still average 0.72. The overall score now
-   blends in a weighted harmonic mean (pulled toward the low end) and applies a
-   factor for the weakest metric, because a face is limited by its worst feature.
+Two changes fixed it:
 
-The resulting curve, asserted by `npm test`:
+1. **Exponential decay** — `exp(-|dev| / scale)` never reaches zero, so ordering
+   survives all the way down instead of flattening at the tolerance.
+2. **Scales fitted to the data** — each `SCALE` value in `src/lib/scoring.ts` is
+   `median deviation / 0.598`, which puts the median real face at 0.55 on that
+   metric. They are no longer numbers chosen from an ideal.
 
-```
-q=0.00  overall 9.75  PSL 7.8  Chad
-q=0.20  overall 9.14  PSL 7.4  Chad
-q=0.35  overall 8.20  PSL 6.7  Chadlite
-q=0.50  overall 7.03  PSL 5.9  HTN
-q=0.70  overall 4.27  PSL 4.0  MTN
-q=1.00  overall 1.53  PSL 2.1  Developing
-```
+The fitted sample now spreads **3.16 – 6.66, sd 1.12**, where before it spanned
+1.5 – 4.0 with half the metrics pinned at zero. The raw measurements are in
+`scripts/fixtures/real-faces.json` (numbers only — no photos, no identities) and
+`npm test` asserts the spread, so a future re-tune cannot silently flatten the
+scale again.
 
-Two regression guards sit on top: a model-quality face must clear PSL 6, a weak
-face must fall below 3, and the two must be at least 4 points apart. If the top
-of the scale ever saturates again, the suite fails.
-
-**One robustness note.** Landmark 10 approximates the trichion (hairline), which
-MediaPipe estimates from face shape rather than detecting hair. On a high or
-receding hairline it can sit well above the real hairline and inflate the top
-third. Since that is indistinguishable from a genuinely long forehead, the top
-third is capped at 1.5× the mean of the other two — better to under-penalise a
-real forehead than to crush a score on a landmark we do not trust.
+**A diagnostics panel** on the result screen shows every measurement with its
+ideal, its deviation as a multiple of scale, and its score — so any further
+calibration can be done from numbers rather than guesswork.
 
 **What Bone Structure does and does not measure.** A frontal 2D photo supports
 jaw breadth, the gonial angle and chin proportion. It does **not** support
