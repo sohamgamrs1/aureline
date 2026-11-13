@@ -10,14 +10,17 @@ export type Point = { x: number; y: number; z: number };
 /** A landmark converted from normalised space into image pixels. */
 export type Pixel = { x: number; y: number };
 
-/** The six measured ratios, each normalised to 0..1 by a closeness function. */
+/** Every ratio Aureline measures, each normalised to 0..1 by a closeness curve. */
 export type MetricKey =
   | "symmetry"
   | "thirds"
   | "fifths"
   | "canthalTilt"
   | "fwhr"
-  | "midface";
+  | "midface"
+  | "goldenRatio"
+  | "definition"
+  | "skin";
 
 export type MetricSet = Record<MetricKey, number>;
 
@@ -38,17 +41,31 @@ export type RawMeasurements = {
   fifthsVariation: number;
   fwhrValue: number;
   midfaceValue: number;
+  /** Bigonial width ÷ bizygomatic width. */
   jawRatio: number;
+  /** Chin height ÷ total face height. */
   chinRatio: number;
   /** Share of the vertical face height taken by the lower third (0..1). */
   lowerThirdShare: number;
+  /** Interior angle at the gonion, in degrees. Sharper = more angular jaw. */
+  gonialAngleDeg: number;
+  /** Mouth width ÷ nose width. */
+  mouthNoseRatio: number;
+  /** Intercanthal distance ÷ nose width. */
+  intercanthalNoseRatio: number;
+  /** Eye width ÷ intercanthal distance. */
+  eyeIntercanthalRatio: number;
+  /** Face height ÷ face width. */
+  faceAspectRatio: number;
+  /** Mean of the four golden-ratio closeness scores, 0..1. */
+  goldenValue: number;
   /** Mean luminance of the sampled skin patch, 0..1. */
   skinLuminance: number;
   /** Local variance of the sampled skin patch (lower = more even). */
   skinVariance: number;
 };
 
-/** The eight cards shown in the detailed breakdown. */
+/** The ten cards shown in the detailed breakdown. */
 export type BreakdownKey =
   | "overall"
   | "symmetry"
@@ -56,6 +73,8 @@ export type BreakdownKey =
   | "midface"
   | "lowerThird"
   | "jawline"
+  | "boneStructure"
+  | "goldenRatio"
   | "skinQuality"
   | "harmony";
 

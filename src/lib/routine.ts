@@ -15,7 +15,6 @@
  */
 
 import type { MetricKey, MetricSet, RawMeasurements, RoutineSection } from "./types";
-import { skinQualityScore } from "./scoring";
 
 export type Lever = {
   id: MetricKey | "skin";
@@ -29,13 +28,25 @@ export type Lever = {
 /** The six levers the routine can be personalised on, lowest first. */
 export function rankLevers(metrics: MetricSet, raw: RawMeasurements): Lever[] {
   const levers: Lever[] = [
-    { id: "skin", label: "skin", fullLabel: "Skin quality", value: skinQualityScore(raw) },
-    { id: "symmetry", label: "symmetry", fullLabel: "Symmetry", value: metrics.symmetry },
-    { id: "thirds", label: "vertical balance", fullLabel: "Facial thirds", value: metrics.thirds },
-    { id: "fifths", label: "horizontal balance", fullLabel: "Facial fifths", value: metrics.fifths },
-    { id: "canthalTilt", label: "eye area", fullLabel: "Eye area", value: metrics.canthalTilt },
-    { id: "fwhr", label: "proportion", fullLabel: "Face width-to-height", value: metrics.fwhr },
-    { id: "midface", label: "midface length", fullLabel: "Midface", value: metrics.midface },
+    { id: "skin", label: "skin", fullLabel: "Skin quality", value: metrics.skin ?? 0 },
+    { id: "symmetry", label: "symmetry", fullLabel: "Symmetry", value: metrics.symmetry ?? 0 },
+    { id: "thirds", label: "vertical balance", fullLabel: "Facial thirds", value: metrics.thirds ?? 0 },
+    { id: "fifths", label: "horizontal balance", fullLabel: "Facial fifths", value: metrics.fifths ?? 0 },
+    { id: "canthalTilt", label: "eye area", fullLabel: "Eye area", value: metrics.canthalTilt ?? 0 },
+    { id: "fwhr", label: "proportion", fullLabel: "Face width-to-height", value: metrics.fwhr ?? 0 },
+    { id: "midface", label: "midface length", fullLabel: "Midface", value: metrics.midface ?? 0 },
+    {
+      id: "goldenRatio",
+      label: "canon proximity",
+      fullLabel: "Golden ratio proximity",
+      value: metrics.goldenRatio ?? 0,
+    },
+    {
+      id: "definition",
+      label: "bone structure",
+      fullLabel: "Bone structure",
+      value: metrics.definition ?? 0,
+    },
   ];
   return levers.sort((a, b) => a.value - b.value);
 }
@@ -48,6 +59,8 @@ const SECTION_FOR_LEVER: Record<string, string[]> = {
   canthalTilt: ["sleep", "skin"],
   fwhr: ["fitness"],
   midface: ["posture", "fitness"],
+  goldenRatio: ["posture", "fitness"],
+  definition: ["fitness", "posture"],
 };
 
 type SectionTemplate = Omit<RoutineSection, "tasks"> & {

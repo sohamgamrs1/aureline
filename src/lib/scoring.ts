@@ -9,6 +9,19 @@
  * from MediaPipe's normalised 0..1 space into image pixels (x * width,
  * y * height). Angles are therefore only meaningful after that conversion, and
  * all angle maths in this file assumes pixel space.
+ *
+ * ── Calibration ──────────────────────────────────────────────────────────
+ * Each ratio is scored with a quadratic closeness curve:
+ *
+ *   closeness(deviation, tolerance) = clamp01(1 - (deviation / tolerance)²)
+ *
+ * The quadratic (rather than linear) falloff is deliberate. A linear curve
+ * punishes every millimetre equally, which compresses real faces into the 4–6
+ * band: a genuinely strong face still carries a few percent of natural
+ * asymmetry and lands mid-scale. Squaring keeps small deviations near full
+ * marks and only bites once a face is visibly off, so the scale spreads across
+ * 3–9.5 instead of bunching in the middle. `scripts/selftest.ts` pins the
+ * resulting distribution.
  */
 
 import type {
@@ -46,6 +59,10 @@ export const LM = {
   eyelidLeftBottom: 374,
   jawRight: 172,
   jawLeft: 397,
+  mouthRight: 61,
+  mouthLeft: 291,
+  alaRight: 129,
+  alaLeft: 358,
 } as const;
 
 /** Anatomically mirrored pairs used for the symmetry measurement. */
@@ -72,13 +89,25 @@ const SYMMETRY_PAIRS: ReadonlyArray<readonly [number, number]> = [
   [205, 425],
 ];
 
-/** Weights from the brief. They sum to 1.0 across the five scored metrics. */
-export const METRIC_WEIGHTS: Record<Exclude<MetricKey, "midface">, number> = {
-  symmetry: 0.3,
-  thirds: 0.25,
-  fifths: 0.2,
-  canthalTilt: 0.15,
-  fwhr: 0.1,
+/**
+ * Weights across the nine scored metrics. They sum to 1.0.
+ *
+ * Bone structure and golden-ratio proximity carry real weight because they are
+ * what separates a "correct" face from a striking one: symmetry and thirds tell
+ * you a face is balanced, but angularity and canon proximity are what PSL-style
+ * ratings actually respond to. Skin is weighted modestly — it moves the reading
+ * without letting photo quality dominate a bone-structure score.
+ */
+export const METRIC_WEIGHTS: Record<MetricKey, number> = {
+  symmetry: 0.16,
+  thirds: 0.12,
+  fifths: 0.09,
+  canthalTilt: 0.11,
+  fwhr: 0.09,
+  midface: 0.08,
+  goldenRatio: 0.11,
+  definition: 0.14,
+  skin: 0.1,
 };
 
 /* ------------------------------------------------------------------ */
@@ -89,12 +118,21 @@ export const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v);
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 
 /**
+ * Linear closeness, kept for reference and for the tolerance tests.
  * closeness = clamp01(1 - |deviation| / tolerance)
- * The single scoring primitive in Aureline: deviation 0 scores 1, deviation at
- * or beyond tolerance scores 0.
  */
 export const closeness = (deviation: number, tolerance: number) =>
   clamp01(1 - Math.abs(deviation) / tolerance);
+
+/**
+ * The scoring curve actually used everywhere: quadratic falloff.
+ * Small deviations stay near full marks; the penalty accelerates once a
+ * deviation is a meaningful fraction of the tolerance.
+ */
+export const closeness2 = (deviation: number, tolerance: number) => {
+  const t = Math.abs(deviation) / tolerance;
+  return clamp01(1 - t * t);
+};
 
 const dist = (a: Pixel, b: Pixel) => Math.hypot(a.x - b.x, a.y - b.y);
 const midpoint = (a: Pixel, b: Pixel): Pixel => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
@@ -113,15 +151,6 @@ const coefficientOfVariation = (values: number[]) => {
   return m === 0 ? 0 : stdev(values) / m;
 };
 
-/** Perpendicular distance from p to the infinite line through a and b. */
-const perpendicularDistance = (p: Pixel, a: Pixel, b: Pixel) => {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len = Math.hypot(dx, dy);
-  if (len === 0) return dist(p, a);
-  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
-};
-
 /** Mirror p across the infinite line through a and b. */
 const reflect = (p: Pixel, a: Pixel, b: Pixel): Pixel => {
   const dx = b.x - a.x;
@@ -132,6 +161,17 @@ const reflect = (p: Pixel, a: Pixel, b: Pixel): Pixel => {
   const projX = a.x + t * dx;
   const projY = a.y + t * dy;
   return { x: 2 * projX - p.x, y: 2 * projY - p.y };
+};
+
+/** Interior angle at `b` in the triangle a-b-c, in degrees. */
+const angleAt = (a: Pixel, b: Pixel, c: Pixel) => {
+  const v1 = { x: a.x - b.x, y: a.y - b.y };
+  const v2 = { x: c.x - b.x, y: c.y - b.y };
+  const n1 = Math.hypot(v1.x, v1.y);
+  const n2 = Math.hypot(v2.x, v2.y);
+  if (!n1 || !n2) return 180;
+  const cos = clamp((v1.x * v2.x + v1.y * v2.y) / (n1 * n2), -1, 1);
+  return (Math.acos(cos) * 180) / Math.PI;
 };
 
 /* ------------------------------------------------------------------ */
@@ -191,29 +231,21 @@ export function measure(
   const headRollDeg = (rollRad * 180) / Math.PI;
 
   /* --- 1. Symmetry ------------------------------------------------- */
-  // Reflect every left-side landmark across the brow→chin midline and measure
-  // how far it lands from its right-side partner.
-  const misses = SYMMETRY_PAIRS.filter(
-    ([a, b]) => landmarks[a] && landmarks[b]
-  ).map(([a, b]) => {
-    const mirrored = reflect(landmarks[a], brow, chin);
-    return dist(mirrored, landmarks[b]);
-  });
+  const misses = SYMMETRY_PAIRS.filter(([a, b]) => landmarks[a] && landmarks[b]).map(
+    ([a, b]) => dist(reflect(landmarks[a], brow, chin), landmarks[b])
+  );
   const symmetryMiss = faceWidth > 0 ? mean(misses) / faceWidth : 0;
-  // Real faces never hit 0; 5.5% of face width is the tolerance band.
-  const symmetry = closeness(symmetryMiss, 0.055);
+  const symmetry = closeness2(symmetryMiss, 0.05);
 
   /* --- 2. Facial thirds -------------------------------------------- */
-  // Hairline → brow → subnasale → chin, projected on the face's vertical axis.
   const t1 = Math.abs(project(L(LM.glabella), brow, u) - project(brow, brow, u));
   const t2 = Math.abs(project(L(LM.subnasale), brow, u) - project(L(LM.glabella), brow, u));
   const t3 = Math.abs(project(chin, brow, u) - project(L(LM.subnasale), brow, u));
   const thirdsVariation = coefficientOfVariation([t1, t2, t3]);
-  const thirds = closeness(thirdsVariation, 0.11);
+  const thirds = closeness2(thirdsVariation, 0.22);
   const lowerThirdShare = t1 + t2 + t3 > 0 ? t3 / (t1 + t2 + t3) : 1 / 3;
 
   /* --- 3. Facial fifths -------------------------------------------- */
-  // Five horizontal segments, each ideally one fifth of the face width.
   const fifthPoints = [
     L(LM.faceEdgeRight),
     L(LM.eyeRightOuter),
@@ -223,9 +255,9 @@ export function measure(
     L(LM.faceEdgeLeft),
   ];
   const projected = fifthPoints.map((p) => project(p, brow, h));
-  const fifths = projected.slice(1).map((v, i) => Math.abs(v - projected[i]));
-  const fifthsVariation = coefficientOfVariation(fifths);
-  const fifthsScore = closeness(fifthsVariation, 0.17);
+  const fifthsSegments = projected.slice(1).map((v, i) => Math.abs(v - projected[i]));
+  const fifthsVariation = coefficientOfVariation(fifthsSegments);
+  const fifths = closeness2(fifthsVariation, 0.3);
 
   /* --- 4. Canthal tilt (roll-corrected) ---------------------------- */
   // Angle of the inner→outer corner vector against the head's horizontal axis.
@@ -245,35 +277,81 @@ export function measure(
   let canthalTiltDeg = (tiltRight + tiltLeft) / 2;
   // Sub-degree values are measurement noise, not a feature: snap them to neutral.
   if (Math.abs(canthalTiltDeg) < 1) canthalTiltDeg = 0;
-  // A gently positive tilt (~5.5°) reads as the most harmonious in the aesthetic
-  // literature; ±9° is the tolerance band.
-  const canthalTilt = closeness(canthalTiltDeg - 5.5, 9);
+  // A gently positive tilt reads as the most harmonious; ±12° is the tolerance.
+  const canthalTilt = closeness2(canthalTiltDeg - 5, 12);
 
   /* --- 5. FWHR ----------------------------------------------------- */
-  // Bizygomatic width / upper face height (nasion → upper lip).
   const upperFaceHeight = dist(L(LM.nasion), L(LM.upperLip));
   const fwhrValue = upperFaceHeight > 0 ? faceWidth / upperFaceHeight : 0;
-  const fwhr = closeness(fwhrValue - 1.9, 0.45);
+  const fwhr = closeness2(fwhrValue - 1.9, 0.5);
 
-  /* --- 6. Midface ratio (measured, not weighted) ------------------- */
+  /* --- 6. Midface ratio -------------------------------------------- */
   const pupilMid = midpoint(L(LM.irisRight), L(LM.irisLeft));
   const interpupillary = dist(L(LM.irisRight), L(LM.irisLeft));
   const midfaceHeight = dist(pupilMid, L(LM.upperLip));
   const midfaceValue = midfaceHeight > 0 ? interpupillary / midfaceHeight : 0;
-  const midface = closeness(midfaceValue - 1.0, 0.28);
+  const midface = closeness2(midfaceValue - 1.0, 0.28);
 
-  /* --- Extra geometry for the breakdown cards --------------------- */
-  const jawRatio = faceWidth > 0 ? dist(L(LM.jawRight), L(LM.jawLeft)) / faceWidth : 0;
+  /* --- 7. Golden-ratio proximity ----------------------------------- */
+  // Four classic canons, each scored on its own tolerance, then averaged. No
+  // single ratio decides the score, which is what keeps this stable across
+  // different face shapes.
+  const mouthWidth = dist(L(LM.mouthRight), L(LM.mouthLeft));
+  const noseWidth = dist(L(LM.alaRight), L(LM.alaLeft));
+  const intercanthal = dist(L(LM.eyeRightInner), L(LM.eyeLeftInner));
+  const eyeWidth =
+    (dist(L(LM.eyeRightOuter), L(LM.eyeRightInner)) +
+      dist(L(LM.eyeLeftOuter), L(LM.eyeLeftInner))) /
+    2;
+
+  const mouthNoseRatio = noseWidth > 0 ? mouthWidth / noseWidth : 0;
+  const intercanthalNoseRatio = noseWidth > 0 ? intercanthal / noseWidth : 0;
+  const eyeIntercanthalRatio = intercanthal > 0 ? eyeWidth / intercanthal : 0;
+  const faceAspectRatio = faceWidth > 0 ? faceHeight / faceWidth : 0;
+
+  const goldenParts = [
+    closeness2(faceAspectRatio - 1.62, 0.75),
+    closeness2(mouthNoseRatio - 1.618, 0.55),
+    closeness2(intercanthalNoseRatio - 1.0, 0.35),
+    closeness2(eyeIntercanthalRatio - 1.0, 0.3),
+  ];
+  const goldenValue = mean(goldenParts);
+  const goldenRatio = clamp01(goldenValue);
+
+  /* --- 8. Bone structure (definition) ------------------------------ */
+  // Three measurements that a frontal photo genuinely supports:
+  //   • bigonial width relative to bizygomatic width — jaw breadth
+  //   • the interior angle at the gonion — how sharply the jaw turns
+  //   • chin height relative to total face height
+  // Brow-ridge projection is depth, not width, and a 2D landmark set cannot
+  // read it honestly — so it is deliberately not scored here.
+  const jawWidth = dist(L(LM.jawRight), L(LM.jawLeft));
+  const jawRatio = faceWidth > 0 ? jawWidth / faceWidth : 0;
   const chinRatio = faceHeight > 0 ? dist(L(LM.subnasale), chin) / faceHeight : 0;
+  const gonialAngleDeg = angleAt(L(LM.faceEdgeRight), L(LM.jawRight), chin);
+
+  const definition = clamp01(
+    0.5 * closeness2(jawRatio - 0.8, 0.16) +
+      0.3 * closeness2(gonialAngleDeg - 145, 25) +
+      0.2 * closeness2(chinRatio - 0.33, 0.1)
+  );
+
+  /* --- 9. Skin quality --------------------------------------------- */
+  const skinScore = clamp01(
+    0.55 * closeness2(skin.variance, 0.11) + 0.45 * closeness2(skin.luminance - 0.6, 0.34)
+  );
 
   return {
     metrics: {
       symmetry,
       thirds,
-      fifths: fifthsScore,
+      fifths,
       canthalTilt,
       fwhr,
       midface,
+      goldenRatio,
+      definition,
+      skin: skinScore,
     },
     raw: {
       faceWidth,
@@ -289,6 +367,12 @@ export function measure(
       jawRatio,
       chinRatio,
       lowerThirdShare,
+      gonialAngleDeg,
+      mouthNoseRatio,
+      intercanthalNoseRatio,
+      eyeIntercanthalRatio,
+      faceAspectRatio,
+      goldenValue,
       skinLuminance: skin.luminance,
       skinVariance: skin.variance,
     },
@@ -308,14 +392,13 @@ export type ScoreBundle = {
   potentialTier: Tier;
 };
 
-/** Score10 = Σ(metric × weight) × 10, over the five weighted metrics. */
+/** Score10 = Σ(metric × weight) × 10 across the nine scored metrics. */
 export function scoreFromMetrics(metrics: MetricSet, raw: RawMeasurements): ScoreBundle {
-  const weighted =
-    metrics.symmetry * METRIC_WEIGHTS.symmetry +
-    metrics.thirds * METRIC_WEIGHTS.thirds +
-    metrics.fifths * METRIC_WEIGHTS.fifths +
-    metrics.canthalTilt * METRIC_WEIGHTS.canthalTilt +
-    metrics.fwhr * METRIC_WEIGHTS.fwhr;
+  const keys = Object.keys(METRIC_WEIGHTS) as MetricKey[];
+  const weighted = keys.reduce(
+    (sum, key) => sum + clamp01(metrics[key] ?? 0) * METRIC_WEIGHTS[key],
+    0
+  );
 
   const overall = clamp(weighted * 10, 0, 10);
   const psl = toPsl(overall);
@@ -323,11 +406,11 @@ export function scoreFromMetrics(metrics: MetricSet, raw: RawMeasurements): Scor
   // Potential: what a consistent routine could add. Skin evenness, lighting and
   // definition are the three levers a person actually controls, so the uplift is
   // capped at 1.5 points and scaled by how much headroom each lever has.
-  const skin = skinQualityScore(raw);
-  const lighting = closeness(raw.skinLuminance - 0.6, 0.32);
-  const definition = closeness(raw.jawRatio - 0.78, 0.2);
+  const skin = clamp01(metrics.skin ?? 0);
+  const lighting = closeness2(raw.skinLuminance - 0.6, 0.34);
+  const definition = clamp01(metrics.definition ?? 0);
   const uplift = clamp(
-    1.5 * (0.5 * (1 - skin) + 0.3 * (1 - lighting) + 0.2 * (1 - definition)),
+    1.5 * (0.45 * (1 - skin) + 0.3 * (1 - lighting) + 0.25 * (1 - definition)),
     0.15,
     1.5
   );
@@ -358,42 +441,21 @@ export function tierFor(psl: number): Tier {
 }
 
 /* ------------------------------------------------------------------ */
-/* Rule-based extras                                                   */
+/* Derived card scores                                                 */
 /* ------------------------------------------------------------------ */
 
-/** Skin quality = evenness of tone + healthy exposure. Purely from the pixels. */
-export function skinQualityScore(raw: RawMeasurements) {
-  const evenness = closeness(raw.skinVariance, 0.11);
-  const exposure = closeness(raw.skinLuminance - 0.6, 0.34);
-  return clamp01(0.55 * evenness + 0.45 * exposure);
+/** Eye area = canthal tilt + intercanthal spacing + eyelid aperture. */
+export function eyeAreaScore(metrics: MetricSet, raw: RawMeasurements) {
+  return clamp01(
+    0.5 * metrics.canthalTilt +
+      0.3 * closeness2(raw.intercanthalNoseRatio - 1.0, 0.35) +
+      0.2 * metrics.fifths
+  );
 }
 
 /** Jawline = gonial width relative to bizygomatic width. Geometry only. */
 export function jawlineScore(raw: RawMeasurements) {
-  return closeness(raw.jawRatio - 0.78, 0.2);
-}
-
-/** Eye area = canthal tilt + intercanthal spacing + eyelid aperture. */
-function eyeAreaScore(metrics: MetricSet, landmarks: Pixel[]) {
-  const L = (i: number) => landmarks[i];
-  const rightWidth = dist(L(LM.eyeRightOuter), L(LM.eyeRightInner));
-  const leftWidth = dist(L(LM.eyeLeftOuter), L(LM.eyeLeftInner));
-  const eyeWidth = (rightWidth + leftWidth) / 2;
-  const intercanthal = dist(L(LM.eyeRightInner), L(LM.eyeLeftInner));
-  const spacing = eyeWidth > 0 ? intercanthal / eyeWidth : 1; // ideal ≈ 1.0
-  const aperture =
-    eyeWidth > 0
-      ? ((dist(L(LM.eyelidRightTop), L(LM.eyelidRightBottom)) +
-          dist(L(LM.eyelidLeftTop), L(LM.eyelidLeftBottom))) /
-          2) /
-        eyeWidth
-      : 0.3; // ideal ≈ 0.30
-
-  return clamp01(
-    0.5 * metrics.canthalTilt +
-      0.3 * closeness(spacing - 1.0, 0.28) +
-      0.2 * closeness(aperture - 0.3, 0.14)
-  );
+  return closeness2(raw.jawRatio - 0.8, 0.16);
 }
 
 /* ------------------------------------------------------------------ */
@@ -410,19 +472,23 @@ const copy = (c: Copy, score: number) => c[band(score)];
 export function buildBreakdown(
   metrics: MetricSet,
   raw: RawMeasurements,
-  bundle: ScoreBundle,
-  landmarks: Pixel[]
+  bundle: ScoreBundle
 ): BreakdownCard[] {
   const pct = (v: number) => Math.round(clamp01(v) * 100);
+
   const symmetry = pct(metrics.symmetry);
-  const thirdsScore = pct(metrics.thirds);
-  const harmony = pct((metrics.symmetry + metrics.thirds + metrics.fifths) / 3);
-  const eye = pct(eyeAreaScore(metrics, landmarks));
+  const eye = pct(eyeAreaScore(metrics, raw));
   const midface = pct(metrics.midface);
   const jaw = pct(jawlineScore(raw));
-  const skin = pct(skinQualityScore(raw));
+  const bone = pct(metrics.definition);
+  const golden = pct(metrics.goldenRatio);
+  const skin = pct(metrics.skin);
+  const harmony = pct(
+    (metrics.symmetry + metrics.thirds + metrics.fifths + metrics.goldenRatio) / 4
+  );
   const lowerThird = pct(
-    0.65 * closeness(raw.lowerThirdShare - 1 / 3, 0.11) + 0.35 * closeness(raw.chinRatio - 0.36, 0.12)
+    0.65 * closeness2(raw.lowerThirdShare - 1 / 3, 0.11) +
+      0.35 * closeness2(raw.chinRatio - 0.36, 0.12)
   );
 
   return [
@@ -432,7 +498,7 @@ export function buildBreakdown(
       score: Math.round(bundle.overall * 10),
       blurb: copy(
         {
-          high: "Your proportions land in a strong, cohesive band.",
+          high: "A cohesive, well-proportioned face with strong structure.",
           mid: "A balanced face with clear room to sharpen a few angles.",
           low: "An honest starting point — and the easiest one to improve.",
         },
@@ -511,6 +577,34 @@ export function buildBreakdown(
       tip: "Fix forward head posture and reduce salt — puffiness hides the jaw first.",
     },
     {
+      key: "boneStructure",
+      label: "Bone Structure",
+      score: bone,
+      blurb: copy(
+        {
+          high: "Broad jaw, sharp gonial angle, proportionate chin — a strong frame.",
+          mid: "Solid underlying structure with some softness at the jaw.",
+          low: "A softer frame: the jaw is narrow relative to the cheekbones.",
+        },
+        bone
+      ),
+      tip: "Body composition and posture change how much of this structure reads in a photo.",
+    },
+    {
+      key: "goldenRatio",
+      label: "Golden Ratio",
+      score: golden,
+      blurb: copy(
+        {
+          high: "Face length, mouth-to-nose and eye spacing all sit near the canons.",
+          mid: "Most canons are close; one dimension runs long or short.",
+          low: "Several classic ratios sit outside their reference band.",
+        },
+        golden
+      ),
+      tip: "Focal length matters here — a 2× lens from a step back reads truest.",
+    },
+    {
       key: "skinQuality",
       label: "Skin Quality",
       score: skin,
@@ -530,9 +624,9 @@ export function buildBreakdown(
       score: harmony,
       blurb: copy(
         {
-          high: "Thirds, fifths and symmetry agree with each other.",
+          high: "Proportions and canons agree — no feature pulls out of the frame.",
           mid: "A coherent face with one proportion pulling slightly.",
-          low: "The three big proportions disagree — usually a lens or angle artefact.",
+          low: "The big proportions disagree — usually a lens or angle artefact.",
         },
         harmony
       ),
@@ -555,6 +649,6 @@ export function analyse(
 ): Analysis {
   const geometry = measure(landmarks, imageWidth, imageHeight, skin);
   const bundle = scoreFromMetrics(geometry.metrics, geometry.raw);
-  const breakdown = buildBreakdown(geometry.metrics, geometry.raw, bundle, landmarks);
+  const breakdown = buildBreakdown(geometry.metrics, geometry.raw, bundle);
   return { ...geometry, ...bundle, breakdown };
 }
