@@ -16,6 +16,60 @@
     />
     <title>Aureline — Know your face. Elevate your presence.</title>
   </head>
+    <style>
+      /* Styles for the boot guard below. Kept here so the guard never has to
+         build inline style strings in JavaScript. */
+      .boot-fail {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        box-sizing: border-box;
+        background: #0a0a0f;
+        color: #f5f5f7;
+        font-family: Inter, system-ui, -apple-system, sans-serif;
+        line-height: 1.6;
+      }
+      .boot-card {
+        max-width: 520px;
+        width: 100%;
+        border: 1px solid rgba(212, 175, 55, 0.28);
+        border-radius: 20px;
+        background: #0e0e15;
+        padding: 28px;
+        box-shadow: 0 18px 50px -24px #000;
+      }
+      .boot-eyebrow {
+        font-size: 10px;
+        letter-spacing: 0.3em;
+        text-transform: uppercase;
+        color: #d4af37;
+      }
+      .boot-title {
+        font-family: Georgia, serif;
+        font-size: 22px;
+        margin: 14px 0 10px;
+        color: #fff;
+      }
+      .boot-body {
+        font-size: 13px;
+        color: #9ca3af;
+      }
+      .boot-pre {
+        margin-top: 16px;
+        max-height: 220px;
+        overflow: auto;
+        white-space: pre-wrap;
+        word-break: break-word;
+        background: #07070b;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 14px;
+        font-size: 11px;
+        color: #f4e6bf;
+      }
+    </style>
     <!--
       Boot guard. A packaged WebView shows a blank white screen when the bundle
       throws before React mounts, which tells you nothing. This turns that into a
@@ -24,42 +78,45 @@
     -->
     <script>
       (function () {
+        var shown = false;
+
+        function escapeHtml(value) {
+          return String(value).replace(/[<>&]/g, function (ch) {
+            if (ch === "<") return "&lt;";
+            if (ch === ">") return "&gt;";
+            return "&amp;";
+          });
+        }
+
         function panel(title, detail) {
+          if (shown) return;
           var root = document.getElementById("root");
           if (!root || root.childElementCount > 0) return;
+          shown = true;
           root.innerHTML =
-            '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;' +
-            "padding:24px;box-sizing:border-box;background:#0A0A0F;color:#F5F5F7;" +
-            "font-family:Inter,system-ui,-apple-system,sans-serif;text-align:left;line-height:1.6">" +
-            '<div style="max-width:520px;width:100%;border:1px solid rgba(212,175,55,.28);' +
-            'border-radius:20px;background:#0E0E15;padding:28px;box-shadow:0 18px 50px -24px #000">' +
-            '<div style="font-size:10px;letter-spacing:.3em;text-transform:uppercase;color:#D4AF37">' +
-            "Aureline &middot; startup</div>" +
-            '<div style="font-family:Georgia,serif;font-size:22px;margin:14px 0 10px;color:#fff">' +
+            '<div class="boot-fail"><div class="boot-card">' +
+            '<div class="boot-eyebrow">Aureline &middot; startup</div>' +
+            '<div class="boot-title">' +
             title +
             "</div>" +
-            '<div style="font-size:13px;color:#9CA3AF">The app did not finish loading. ' +
-            "Send the detail below to get it fixed.</div>" +
-            '<pre style="margin-top:16px;max-height:220px;overflow:auto;white-space:pre-wrap;' +
-            "word-break:break-word;background:#07070B;border:1px solid rgba(255,255,255,.08);" +
-            'border-radius:12px;padding:14px;font-size:11px;color:#F4E6BF">' +
-            String(detail).replace(/[<>&]/g, function (c) {
-              return { "<": "&lt;", ">": "&gt;", "&": "&amp;" }[c];
-            }) +
-            "</pre></div></div>";
+            '<div class="boot-body">The app did not finish loading. Send the detail below so it can be fixed.</div>' +
+            '<pre class="boot-pre">' +
+            escapeHtml(detail) +
+            "</pre>" +
+            "</div></div>";
         }
-        window.addEventListener("error", function (e) {
-          panel("Couldn&rsquo;t start", (e && e.message) || "Unknown error");
+
+        window.addEventListener("error", function (event) {
+          panel("Could not start", (event && event.message) || "Unknown error");
         });
-        window.addEventListener("unhandledrejection", function (e) {
-          var r = e && e.reason;
-          panel("Couldn&rsquo;t start", (r && (r.message || r)) || "Unhandled rejection");
+        window.addEventListener("unhandledrejection", function (event) {
+          var reason = event && event.reason;
+          panel("Could not start", (reason && (reason.message || reason)) || "Unhandled rejection");
         });
         window.setTimeout(function () {
           panel(
             "Taking too long",
-            "The bundle loaded but React never mounted. Most often this means a " +
-              "dependency could not be fetched at runtime."
+            "The bundle loaded but React never mounted. Most often this means a dependency could not be fetched at runtime."
           );
         }, 8000);
       })();

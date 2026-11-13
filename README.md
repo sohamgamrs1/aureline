@@ -159,7 +159,7 @@ One thing worth knowing: if your build tool externalises `react`, `react-dom` an
 fetched **over the network at launch**. An offline first run will hang before
 mounting. Bundling them instead removes that dependency.
 
-## The six measurements
+## The nine measurements
 
 Every number is derived from landmark geometry. Landmarks arrive normalised
 `0..1`; **all** distances and angles are computed after converting to pixels
@@ -167,20 +167,54 @@ Every number is derived from landmark geometry. Landmarks arrive normalised
 
 | Metric | How it is measured | Weight |
 | --- | --- | --- |
-| Symmetry | 20 mirrored landmark pairs reflected across the brow→chin midline; mean miss ÷ face width | 30% |
-| Facial Thirds | Hairline → brow → subnasale → chin, projected on the head's vertical axis; coefficient of variation | 25% |
-| Facial Fifths | Five horizontal segments, face edge → eye corners → face edge; coefficient of variation | 20% |
-| Canthal Tilt | Inner→outer eye-corner angle against the **head's** horizontal axis | 15% |
-| FWHR | Bizygomatic width ÷ upper face height (nasion → upper lip) | 10% |
-| Midface | Interpupillary distance ÷ midface height | reported, not weighted |
+| Symmetry | 20 mirrored landmark pairs reflected across the brow→chin midline; mean miss ÷ face width | 16% |
+| Bone Structure | Bigonial width ÷ bizygomatic width, the interior angle at the gonion, and chin height ÷ face height | 14% |
+| Facial Thirds | Hairline → brow → subnasale → chin, projected on the head's vertical axis; coefficient of variation | 12% |
+| Canthal Tilt | Inner→outer eye-corner angle against the **head's** horizontal axis | 11% |
+| Golden Ratio | Four canons: face height÷width, mouth÷nose, intercanthal÷nose, eye width÷intercanthal | 11% |
+| Skin Quality | Evenness and healthy exposure of the two sampled cheek patches | 10% |
+| Facial Fifths | Five horizontal segments, face edge → eye corners → face edge; coefficient of variation | 9% |
+| FWHR | Bizygomatic width ÷ upper face height (nasion → upper lip) | 9% |
+| Midface | Interpupillary distance ÷ midface height | 8% |
 
-One primitive scores everything:
+One curve scores everything:
 
 ```
-closeness = clamp01(1 - |deviation| / tolerance)
+closeness = clamp01(1 - (deviation / tolerance)²)
 ```
 
 `Score10 = Σ(metric × weight) × 10`, `PSL = 1 + (Score10 / 10) × 7`.
+
+### Why the curve is quadratic, and why the weights changed
+
+The first build scored each ratio with a **linear** falloff, `1 - |dev| / tol`.
+That punishes every millimetre equally, and because no real face is perfectly
+symmetric or perfectly thirds-divided, it compressed everyone into a narrow 4–6
+strip: a genuinely strong face still carries a few percent of natural asymmetry
+and landed mid-scale. Squaring the falloff keeps small deviations near full
+marks and only bites once a face is visibly off, so the scale spreads from ~3 to
+~9.5 instead of bunching in the middle.
+
+The weights also shifted away from a pure-proportion model. Symmetry and thirds
+tell you a face is *balanced*; they do not tell you it is *striking*. Angularity
+(Bone Structure) and canon proximity (Golden Ratio) are what separate the two,
+so together they now carry 25% of the score.
+
+`npm test` prints the resulting calibration curve and asserts it:
+
+```
+q=0.00  overall 9.84  PSL 7.9  Chad
+q=0.35  overall 8.79  PSL 7.2  Chad
+q=0.50  overall 7.83  PSL 6.5  Chadlite
+q=0.70  overall 6.35  PSL 5.4  HTN
+q=1.00  overall 3.69  PSL 3.6  LTN
+```
+
+**What Bone Structure does and does not measure.** A frontal 2D photo supports
+jaw breadth, the gonial angle and chin proportion. It does **not** support
+brow-ridge projection, which is depth — so that is deliberately not scored
+rather than faked from a proxy. The metric reads *angularity and definition*,
+not masculinity or femininity; it does not assume either is better.
 
 ### Two details that are easy to get wrong
 
