@@ -1,17 +1,28 @@
 /**
  * Aureline self-test — run with `npm test`.
  *
- * Builds a synthetic "reference" face from canonical proportions (equal thirds,
- * five eye-widths, 5.5° canthal tilt, 1.9 FWHR, 1.0 midface ratio), feeds it
- * through the exact measure()/scoreFromMetrics() path the browser uses, and
- * asserts the numbers land where they should.
+ * Two jobs:
  *
- * This catches landmark-index mistakes, coordinate-space mistakes and the
- * canthal-tilt / head-roll interaction without needing a photo or a browser.
+ *  1. **Correctness.** A synthetic "reference" face built from canonical
+ *     proportions (equal thirds, five eye-widths, 5.5° canthal tilt, 1.9 FWHR,
+ *     1.0 midface ratio, golden mouth-to-nose) must come out near the top of the
+ *     scale, and each individual ratio must be recovered from the geometry.
+ *
+ *  2. **Calibration.** Perturbing that face by a controlled amount must move the
+ *     overall score through the bands a human rater would use. Without this,
+ *     the tolerances drift and every real face lands in a narrow 4–6 strip.
  */
 
-import { analyse, closeness, measure, toPsl, tierFor, LM } from "../src/lib/scoring";
-import type { Pixel } from "../src/lib/types";
+import {
+  analyse,
+  closeness,
+  closeness2,
+  measure,
+  toPsl,
+  tierFor,
+  LM,
+} from "../src/lib/scoring";
+import type { Pixel, RawMeasurements } from "../src/lib/types";
 
 let failures = 0;
 function check(name: string, condition: boolean, detail = "") {
@@ -26,43 +37,68 @@ function check(name: string, condition: boolean, detail = "") {
 const W = 1000;
 const H = 1400;
 
+type FaceOptions = {
+  tilt?: number;
+  roll?: number;
+  /** 0 = canonical face, 1 = clearly off. Drives the calibration test. */
+  q?: number;
+};
+
 /**
- * A face built to spec, in pixel space:
+ * Canonical face, in pixel space:
  *   trichion 300 · glabella 550 · subnasale 800 · chin 1050   (equal thirds)
- *   bizygomatic width 380 · IPD 152 · eye width 76            (five eye-widths)
+ *   bizygomatic 380 · IPD 152 · eye width 76                  (five eye-widths)
  *   nasion 630 · upper lip 830                                (FWHR 1.90)
- *   pupil line 678                                            (midface ratio 1.00)
+ *   pupil line 678                                            (midface 1.00)
+ *   mouth 118 · nose 84                                       (golden 1.40)
  */
-function referenceFace(opts: { tilt?: number; roll?: number; asym?: number } = {}): Pixel[] {
-  const { tilt = 5.5, roll = 0, asym = 0 } = opts;
+function face(options: FaceOptions = {}): Pixel[] {
+  const { tilt: tiltOverride, roll = 0, q = 0 } = options;
+  const tilt = tiltOverride ?? 5.5 - 10 * q;
   const cx = W / 2;
   const pts: Pixel[] = Array.from({ length: 478 }, () => ({ x: cx, y: 700 }));
-
-  const faceWidth = 380;
-  const eyeY = 678;
-  const rad = (tilt * Math.PI) / 180;
 
   const set = (i: number, x: number, y: number) => {
     pts[i] = { x, y };
   };
 
-  /* midline vertical landmarks */
+  /* perturbation amplitudes, all scaled by q */
+  const glabellaY = 550 + 50 * q;
+  const subnasaleY = 800 - 40 * q;
+  const upperLipY = 830;
+  const nasionY = 630 - 20 * q;
+  const eyeOuterX = 114 - 24 * q;
+  const eyeInnerX = 38 - 10 * q;
+  const jawX = 148 - 25 * q;
+  const asym = 22 * q;
+
+  const eyeY = 678 - 14 * q;
+  const rad = (tilt * Math.PI) / 180;
+  const dy = Math.tan(rad) * 38;
+
+  /* midline */
   set(LM.browMid, cx, 300);
-  set(LM.glabella, cx, 550);
-  set(LM.nasion, cx, 630);
+  set(LM.glabella, cx, glabellaY);
+  set(LM.nasion, cx, nasionY);
   set(LM.noseTip, cx, 740);
-  set(LM.subnasale, cx, 800);
-  set(LM.upperLip, cx, 830);
+  set(LM.subnasale, cx, subnasaleY);
+  set(LM.upperLip, cx, upperLipY);
   set(LM.chin, cx, 1050);
 
-  /* bizygomatic width + jaw */
-  set(LM.faceEdgeRight, cx - faceWidth / 2, 640);
-  set(LM.faceEdgeLeft, cx + faceWidth / 2, 640);
-  set(LM.jawRight, cx - faceWidth * 0.39, 900);
-  set(LM.jawLeft, cx + faceWidth * 0.39, 900);
+  /* face width + jaw */
+  set(LM.faceEdgeRight, cx - 190, 640);
+  set(LM.faceEdgeLeft, cx + 190, 640);
+  set(LM.jawRight, cx - jawX, 900);
+  set(LM.jawLeft, cx + jawX, 900);
 
-  /* eyes: corners at exact fifths, tilt applied symmetrically */
-  const dy = Math.tan(rad) * 38; // half of an eye width
+  /* mouth + nose */
+  set(LM.mouthRight, cx - 59, 858);
+  set(LM.mouthLeft, cx + 59, 858);
+  const alaX = 42 + 18 * q;
+  set(LM.alaRight, cx - alaX, 790);
+  set(LM.alaLeft, cx + alaX, 790);
+
+  /* eyes, corners at exact fifths before perturbation */
   const eye = (
     outer: number,
     inner: number,
@@ -79,8 +115,8 @@ function referenceFace(opts: { tilt?: number; roll?: number; asym?: number } = {
     set(bottom, (outerX + innerX) / 2, eyeY + 11);
   };
 
-  eye(LM.eyeRightOuter, LM.eyeRightInner, LM.irisRight, LM.eyelidRightTop, LM.eyelidRightBottom, cx - 114, cx - 38);
-  eye(LM.eyeLeftOuter, LM.eyeLeftInner, LM.irisLeft, LM.eyelidLeftTop, LM.eyelidLeftBottom, cx + 114, cx + 38);
+  eye(LM.eyeRightOuter, LM.eyeRightInner, LM.irisRight, LM.eyelidRightTop, LM.eyelidRightBottom, cx - eyeOuterX, cx - eyeInnerX);
+  eye(LM.eyeLeftOuter, LM.eyeLeftInner, LM.irisLeft, LM.eyelidLeftTop, LM.eyelidLeftBottom, cx + eyeOuterX, cx + eyeInnerX);
 
   /* symmetric landmark pairs used by the symmetry metric */
   const pairs: readonly (readonly [number, number])[] = [
@@ -90,7 +126,7 @@ function referenceFace(opts: { tilt?: number; roll?: number; asym?: number } = {
     [176, 400], [205, 425],
   ];
   const alreadySet = new Set([
-    33, 263, 133, 362, 159, 386, 145, 374, 172, 397, 234, 454,
+    33, 263, 133, 362, 159, 386, 145, 374, 172, 397, 234, 454, 61, 291,
   ]);
 
   let free = 0;
@@ -99,7 +135,7 @@ function referenceFace(opts: { tilt?: number; roll?: number; asym?: number } = {
     const offset = 48 + free * 7;
     const y = 660 + free * 9;
     set(a, cx - offset, y);
-    set(b, cx + offset + (free === 0 ? asym : 0), y);
+    set(b, cx + offset + asym, y);
     free += 1;
   }
 
@@ -118,58 +154,101 @@ function referenceFace(opts: { tilt?: number; roll?: number; asym?: number } = {
   return pts;
 }
 
-const skin = { luminance: 0.62, variance: 0.02 };
+const skinFor = (q: number) => ({ luminance: 0.62 - 0.08 * q, variance: 0.02 + 0.08 * q });
+const skin = skinFor(0);
+
+const analyseAt = (q: number) => analyse(face({ q }), W, H, skinFor(q));
 
 console.log("\nAureline self-test\n");
 
-/* 1 — the closeness primitive */
-check("closeness(0, t) === 1", closeness(0, 0.5) === 1);
-check("closeness(t, t) === 0", closeness(0.5, 0.5) === 0);
-check("closeness is symmetric", closeness(0.2, 0.5) === closeness(-0.2, 0.5));
-check("closeness clamps at 0", closeness(9, 0.5) === 0);
-
-/* 2 — a reference face should score near the top */
-const face = referenceFace();
-const good = analyse(face, W, H, skin);
-console.log(
-  `     reference face: overall ${good.overall.toFixed(2)} · PSL ${good.psl} · tilt ${good.raw.canthalTiltDeg.toFixed(2)}° · FWHR ${good.raw.fwhrValue.toFixed(2)} · midface ${good.raw.midfaceValue.toFixed(2)}`
+/* ------------------------------------------------------------------ */
+/* 1 — the scoring curve                                               */
+/* ------------------------------------------------------------------ */
+check("closeness2(0, t) === 1", closeness2(0, 0.5) === 1);
+check("closeness2(t, t) === 0", closeness2(0.5, 0.5) === 0);
+check("closeness2 is symmetric", closeness2(0.2, 0.5) === closeness2(-0.2, 0.5));
+check("closeness2 clamps at 0", closeness2(9, 0.5) === 0);
+check(
+  "quadratic is kinder than linear near the ideal",
+  closeness2(0.2, 0.5) > closeness(0.2, 0.5),
+  `${closeness2(0.2, 0.5).toFixed(2)} vs ${closeness(0.2, 0.5).toFixed(2)}`
 );
+
+/* ------------------------------------------------------------------ */
+/* 2 — the canonical face is recovered                                 */
+/* ------------------------------------------------------------------ */
+const good = analyse(face(), W, H, skin);
+console.log(
+  `     canonical face: overall ${good.overall.toFixed(2)} · PSL ${good.psl} · ` +
+    `tilt ${good.raw.canthalTiltDeg.toFixed(1)}° · FWHR ${good.raw.fwhrValue.toFixed(2)} · ` +
+    `midface ${good.raw.midfaceValue.toFixed(2)} · golden ${good.raw.goldenValue.toFixed(2)} · ` +
+    `gonial ${Math.round(good.raw.gonialAngleDeg)}°`
+);
+
 check("symmetry reads high", good.metrics.symmetry > 0.9, good.metrics.symmetry.toFixed(3));
 check("equal thirds read high", good.metrics.thirds > 0.9, good.metrics.thirds.toFixed(3));
 check("equal fifths read high", good.metrics.fifths > 0.9, good.metrics.fifths.toFixed(3));
 check("FWHR is recovered", Math.abs(good.raw.fwhrValue - 1.9) < 0.02, good.raw.fwhrValue.toFixed(3));
 check("midface ratio is recovered", Math.abs(good.raw.midfaceValue - 1.0) < 0.02, good.raw.midfaceValue.toFixed(3));
-check(
-  "canthal tilt is recovered per eye",
-  Math.abs(good.raw.canthalTiltDeg - 5.5) < 0.6,
-  `${good.raw.canthalTiltDeg.toFixed(2)}°`
-);
-check("overall score is high on a reference face", good.overall > 8, good.overall.toFixed(2));
+check("canthal tilt is recovered", Math.abs(good.raw.canthalTiltDeg - 5.5) < 0.6, good.raw.canthalTiltDeg.toFixed(2));
+check("golden components are recovered", good.raw.goldenValue > 0.85, good.raw.goldenValue.toFixed(3));
+check("mouth-to-nose canon is recovered", Math.abs(good.raw.mouthNoseRatio - 1.405) < 0.05, good.raw.mouthNoseRatio.toFixed(3));
+check("bone structure reads high", good.metrics.definition > 0.9, good.metrics.definition.toFixed(3));
+check("canonical face lands near the top", good.overall > 9, good.overall.toFixed(2));
 check("potential is >= overall and capped at 10", good.potential >= good.overall && good.potential <= 10);
 
-/* 3 — head roll must NOT cancel the canthal tilt */
-const rolled = analyse(referenceFace({ roll: 6 }), W, H, skin);
+/* ------------------------------------------------------------------ */
+/* 3 — head roll must not cancel canthal tilt                          */
+/* ------------------------------------------------------------------ */
+const rolled = analyse(face({ roll: 6 }), W, H, skin);
 check("head roll is detected", Math.abs(Math.abs(rolled.raw.headRollDeg) - 6) < 1.5, rolled.raw.headRollDeg.toFixed(2));
 check(
   "canthal tilt survives a 6° head roll",
   Math.abs(rolled.raw.canthalTiltDeg - good.raw.canthalTiltDeg) < 0.8,
   `${rolled.raw.canthalTiltDeg.toFixed(2)} vs ${good.raw.canthalTiltDeg.toFixed(2)}`
 );
+check("negative tilt reads negative", analyse(face({ tilt: -6 }), W, H, skin).raw.canthalTiltDeg < -3);
 
-/* 4 — a negative tilt must read negative */
-const negative = analyse(referenceFace({ tilt: -6 }), W, H, skin);
-check("negative tilt is detected as negative", negative.raw.canthalTiltDeg < -3, negative.raw.canthalTiltDeg.toFixed(2));
+/* ------------------------------------------------------------------ */
+/* 4 — calibration: the scale must spread, not bunch                   */
+/* ------------------------------------------------------------------ */
+console.log("\n     calibration curve");
+const curve = [0, 0.2, 0.35, 0.5, 0.7, 1].map((q) => ({ q, r: analyseAt(q) }));
+for (const { q, r } of curve) {
+  const m = r.metrics;
+  console.log(
+    `       q=${q.toFixed(2)}  overall ${r.overall.toFixed(2).padStart(5)}  PSL ${r.psl.toFixed(1)}  ${r.tier.short.padEnd(9)} ` +
+      `sym ${m.symmetry.toFixed(2)} thd ${m.thirds.toFixed(2)} fif ${m.fifths.toFixed(2)} ` +
+      `tlt ${m.canthalTilt.toFixed(2)} fwhr ${m.fwhr.toFixed(2)} mid ${m.midface.toFixed(2)} ` +
+      `gld ${m.goldenRatio.toFixed(2)} bne ${m.definition.toFixed(2)} skn ${m.skin.toFixed(2)}`
+  );
+}
 
-/* 5 — asymmetry must be punished */
-const skewed = analyse(referenceFace({ asym: 30 }), W, H, skin);
+const at = (q: number) => curve.find((c) => c.q === q)!.r;
+const excellent = at(0.35);
+const strong = at(0.5);
+const middling = at(0.7);
+const weak = at(1);
+
+// The complaint this recalibration answers: faces that read as PSL 6+ to a human
+// were coming out mid-scale. A strong face must clear 6, and an excellent one
+// must reach the Chad band.
+check("an excellent face lands in the Chad band", excellent.overall >= 8 && excellent.overall <= 9.5, excellent.overall.toFixed(2));
+check("a strong face clears the PSL 6 bar", strong.psl >= 6, `PSL ${strong.psl}`);
+check("a good face lands in the Chadlite band", strong.overall >= 6.9 && strong.overall <= 8.4, strong.overall.toFixed(2));
+check("a middling face lands in HTN", middling.overall >= 5.2 && middling.overall <= 7.2, middling.overall.toFixed(2));
+check("a weak face scores below average", weak.overall <= 4.4, weak.overall.toFixed(2));
+check("the scale is monotonic", curve.every((c, i) => i === 0 || c.r.overall <= curve[i - 1].r.overall + 1e-9));
+check("the scale spans at least 5 points", curve[0].r.overall - weak.overall >= 5, (curve[0].r.overall - weak.overall).toFixed(2));
+check("no band is empty", new Set(curve.map((c) => Math.round(c.r.overall))).size >= 5);
 check(
-  "asymmetry lowers the symmetry score",
-  skewed.metrics.symmetry < good.metrics.symmetry,
-  `${skewed.metrics.symmetry.toFixed(3)} < ${good.metrics.symmetry.toFixed(3)}`
+  "tiers are monotonic with q",
+  curve.every((c, i) => i === 0 || c.r.psl <= curve[i - 1].r.psl + 1e-9)
 );
-check("asymmetry lowers the overall score", skewed.overall < good.overall, `${skewed.overall.toFixed(2)} < ${good.overall.toFixed(2)}`);
 
-/* 6 — PSL mapping + tiers */
+/* ------------------------------------------------------------------ */
+/* 5 — PSL mapping + tiers                                             */
+/* ------------------------------------------------------------------ */
 check("PSL(0) === 1", toPsl(0) === 1);
 check("PSL(10) === 8", toPsl(10) === 8);
 check("PSL(5) === 4.5", toPsl(5) === 4.5);
@@ -178,19 +257,29 @@ check("tier 7.2 is Chad", tierFor(7.2).short === "Chad");
 check("tier 8 is Top Tier", tierFor(8).label === "Top Tier");
 check("tier 2.4 is Developing", tierFor(2.4).label === "Developing");
 
-/* 7 — the breakdown contract */
-check("eight breakdown cards", good.breakdown.length === 8);
+/* ------------------------------------------------------------------ */
+/* 6 — the breakdown contract                                          */
+/* ------------------------------------------------------------------ */
+check("ten breakdown cards", good.breakdown.length === 10, String(good.breakdown.length));
+check(
+  "breakdown covers the requested factors",
+  ["symmetry", "boneStructure", "goldenRatio", "skinQuality", "harmony", "lowerThird"].every((k) =>
+    good.breakdown.some((c) => c.key === k)
+  )
+);
 check("breakdown scores are 0..100", good.breakdown.every((c) => c.score >= 0 && c.score <= 100));
 check("every card has a tip", good.breakdown.every((c) => c.tip.length > 10));
 
-/* 8 — the pixel-space contract: ratios must not depend on image resolution */
-const half = face.map((p) => ({ x: p.x / 2, y: p.y / 2 }));
+/* ------------------------------------------------------------------ */
+/* 7 — pixel-space contract                                            */
+/* ------------------------------------------------------------------ */
+const half = face().map((p) => ({ x: p.x / 2, y: p.y / 2 }));
 const scaled = measure(half, W / 2, H / 2, skin);
-const baseline = measure(face, W, H, skin);
+const baseline = measure(face(), W, H, skin);
 check(
   "ratios are resolution independent",
   Math.abs(scaled.metrics.symmetry - baseline.metrics.symmetry) < 0.01 &&
-    Math.abs(scaled.metrics.thirds - baseline.metrics.thirds) < 0.01,
+    Math.abs(scaled.metrics.goldenRatio - baseline.metrics.goldenRatio) < 0.01,
   `sym ${Math.abs(scaled.metrics.symmetry - baseline.metrics.symmetry).toFixed(4)}`
 );
 check(
@@ -199,15 +288,31 @@ check(
   `${scaled.raw.canthalTiltDeg.toFixed(2)} vs ${baseline.raw.canthalTiltDeg.toFixed(2)}`
 );
 
-/* 9 — normalised coordinates must NOT be passed in directly */
-// Sanity guard for the documented contract: feeding 0..1 space changes the answer.
-const normalised = face.map((p) => ({ x: p.x / W, y: p.y / H }));
+/* ------------------------------------------------------------------ */
+/* 8 — normalised coordinates must NOT be passed in directly           */
+/* ------------------------------------------------------------------ */
+const normalised = face().map((p) => ({ x: p.x / W, y: p.y / H }));
 const broken = measure(normalised, 1, 1, skin);
 check(
   "normalised input would visibly distort the tilt (why we convert)",
   Math.abs(broken.raw.canthalTiltDeg - good.raw.canthalTiltDeg) > 1,
   `${broken.raw.canthalTiltDeg.toFixed(2)}° vs ${good.raw.canthalTiltDeg.toFixed(2)}°`
 );
+
+/* ------------------------------------------------------------------ */
+/* 9 — weights are sane                                                */
+/* ------------------------------------------------------------------ */
+import { METRIC_WEIGHTS } from "../src/lib/scoring";
+const total = Object.values(METRIC_WEIGHTS).reduce((s, v) => s + v, 0);
+check("weights sum to 1.0", Math.abs(total - 1) < 1e-9, total.toFixed(4));
+check("every metric carries weight", Object.values(METRIC_WEIGHTS).every((v) => v > 0));
+check(
+  "midface is the lightest, symmetry the heaviest",
+  METRIC_WEIGHTS.symmetry === Math.max(...Object.values(METRIC_WEIGHTS)) &&
+    METRIC_WEIGHTS.midface === Math.min(...Object.values(METRIC_WEIGHTS))
+);
+
+void ({} as RawMeasurements);
 
 console.log(failures === 0 ? "\nAll checks passed.\n" : `\n${failures} check(s) failed.\n`);
 process.exit(failures === 0 ? 0 : 1);
