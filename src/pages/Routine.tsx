@@ -51,6 +51,13 @@ export default function RoutinePage() {
           eyeIntercanthalRatio: 1,
           faceAspectRatio: 1.62,
           goldenValue: 1,
+          noseAxisDeviation: 0,
+          alarAsymmetry: 0,
+          jawVAngleDeg: 90,
+          hairCoverage: 0.7,
+          browDefinition: 0.55,
+          facialHair: 0.85,
+          lipDefinition: 0.55,
           skinLuminance: 0.6,
           skinVariance: 0,
         })

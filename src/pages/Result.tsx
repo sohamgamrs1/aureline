@@ -187,6 +187,16 @@ export default function ResultPage() {
       readout: `${Math.round(raw.gonialAngleDeg)}°`,
     },
     {
+      label: "Nose Axis",
+      value: pct(session.metrics.nose),
+      readout: `${(raw.noseAxisDeviation * 100).toFixed(1)}% off`,
+    },
+    {
+      label: "Hair & Grooming",
+      value: pct(session.metrics.presentation),
+      readout: `${Math.round(raw.hairCoverage * 100)}% hair`,
+    },
+    {
       label: "Skin Quality",
       value: pct(session.metrics.skin),
       readout: `${Math.round(raw.skinLuminance * 100)}% lit`,
@@ -357,8 +367,8 @@ export default function ResultPage() {
           ))}
         </div>
         <p className="mt-7 border-t border-white/[0.07] pt-4 text-[11px] leading-relaxed text-muted/45">
-          The overall score blends symmetry 16%, bone structure 14%, thirds 12%, canthal tilt
-          11%, golden ratio 11%, skin 10%, fifths 9%, width-to-height 9% and midface 8%.
+          The overall score blends symmetry 14%, bone structure 13%, thirds 10%, canthal tilt
+          10%, golden ratio 10%, nose 8%, fifths 8%, width-to-height 8%, midface 7%, skin 7% and hair & grooming 5%.
         </p>
       </section>
 
@@ -374,7 +384,7 @@ export default function ResultPage() {
         <div className="flex flex-wrap items-baseline justify-between gap-3">
           <h2 className="font-display text-2xl text-white/95">Detailed breakdown</h2>
           <p className="text-[10px] uppercase tracking-[0.2em] text-muted/45">
-            Ten readings · one tip each
+            Twelve readings · one tip each
           </p>
         </div>
         <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
