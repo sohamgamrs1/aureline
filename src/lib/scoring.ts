@@ -62,6 +62,7 @@ export const LM = {
   mouthLeft: 291,
   alaRight: 129,
   alaLeft: 358,
+  noseBridge: 6,
 } as const;
 
 /** Anatomically mirrored pairs used for the symmetry measurement. */
@@ -98,15 +99,17 @@ const SYMMETRY_PAIRS: ReadonlyArray<readonly [number, number]> = [
  * without letting photo quality dominate a bone-structure score.
  */
 export const METRIC_WEIGHTS: Record<MetricKey, number> = {
-  symmetry: 0.16,
-  thirds: 0.12,
-  fifths: 0.09,
-  canthalTilt: 0.11,
-  fwhr: 0.09,
-  midface: 0.08,
-  goldenRatio: 0.11,
-  definition: 0.14,
-  skin: 0.1,
+  symmetry: 0.14,
+  thirds: 0.1,
+  fifths: 0.08,
+  canthalTilt: 0.1,
+  fwhr: 0.08,
+  midface: 0.07,
+  goldenRatio: 0.1,
+  definition: 0.13,
+  nose: 0.08,
+  presentation: 0.05,
+  skin: 0.07,
 };
 
 /**
@@ -131,7 +134,7 @@ export const METRIC_WEIGHTS: Record<MetricKey, number> = {
  * Re-fit these if the measurement method changes. `scripts/fixtures/real-faces.json`
  * holds the raw measurements used, and `npm test` asserts the resulting spread.
  */
-const SCALE = {
+export const SCALE = {
   symmetry: 0.1451,
   thirds: 0.4828,
   fifths: 0.4208,
@@ -146,10 +149,22 @@ const SCALE = {
   goldenIntercanthal: 0.3691,
   goldenEye: 0.3462,
   jaw: 0.0509,
-  gonial: 19.9409,
+  gonialCentre: 130,
+  gonial: 5.2,
   chin: 0.1147,
   skinEvenness: 0.1309,
   skinExposure: 0.1741,
+  nose: 0.0362,
+  jawVCentre: 105,
+  jawV: 17.3074,
+  hairCentre: 0.55,
+  hair: 0.3077,
+  browCentre: 0.55,
+  brow: 0.383,
+  beardCentre: 0.55,
+  beard: 0.5531,
+  lipCentre: 0.85,
+  lip: 0.2508,
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -216,6 +231,15 @@ const reflect = (p: Pixel, a: Pixel, b: Pixel): Pixel => {
   return { x: 2 * projX - p.x, y: 2 * projY - p.y };
 };
 
+/** Perpendicular distance from p to the infinite line through a and b. */
+const perpDistance = (p: Pixel, a: Pixel, b: Pixel) => {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len === 0) return dist(p, a);
+  return Math.abs((p.x - a.x) * dy - (p.y - a.y) * dx) / len;
+};
+
 /** Interior angle at `b` in the triangle a-b-c, in degrees. */
 const angleAt = (a: Pixel, b: Pixel, c: Pixel) => {
   const v1 = { x: a.x - b.x, y: a.y - b.y };
@@ -236,6 +260,14 @@ export type SkinStats = {
   luminance: number;
   /** Normalised standard deviation inside that patch, 0..1. */
   variance: number;
+  /** Fraction of the hairline band that reads as hair, 0..1. */
+  hairCoverage?: number;
+  /** Edge contrast across the brow band, 0..1. */
+  browDefinition?: number;
+  /** Evenness of the beard/jaw-shadow region, 0..1. */
+  facialHair?: number;
+  /** Contrast of the lip line against the surrounding skin, 0..1. */
+  lipDefinition?: number;
 };
 
 export type GeometryResult = {
@@ -391,10 +423,49 @@ export function measure(
   const chinRatio = faceHeight > 0 ? dist(L(LM.subnasale), chin) / faceHeight : 0;
   const gonialAngleDeg = angleAt(L(LM.faceEdgeRight), L(LM.jawRight), chin);
 
+  // The V of the lower face, straight from the canonical proportion diagram:
+  // the interior angle at the chin between the two jaw lines. A sharper V is a
+  // more tapered, more defined jaw.
+  const jawVAngleDeg = angleAt(L(LM.jawRight), chin, L(LM.jawLeft));
+
   const definition = clamp01(
-    0.5 * closenessExp(jawRatio - 0.8, SCALE.jaw) +
-      0.3 * closenessExp(gonialAngleDeg - 145, SCALE.gonial) +
-      0.2 * closenessExp(chinRatio - 0.33, SCALE.chin)
+    0.4 * closenessExp(jawRatio - 0.8, SCALE.jaw) +
+      0.25 * closenessExp(gonialAngleDeg - SCALE.gonialCentre, SCALE.gonial) +
+      0.2 * closenessExp(jawVAngleDeg - SCALE.jawVCentre, SCALE.jawV) +
+      0.15 * closenessExp(chinRatio - 0.33, SCALE.chin)
+  );
+
+  /* --- 9. Nose asymmetry ------------------------------------------- */
+  // Global symmetry averages twenty landmark pairs, so a crooked nose barely
+  // moves it. This measures the nose on its own: how far the nasal axis (nasion,
+  // bridge, tip, subnasale) drifts from the brow→chin midline, plus how unevenly
+  // the two alae sit either side of it.
+  const noseDrift = mean(
+    [LM.nasion, LM.noseBridge, LM.noseTip, LM.subnasale].map((i) =>
+      perpDistance(L(i), brow, chin)
+    )
+  );
+  const noseAxisDeviation = faceWidth > 0 ? noseDrift / faceWidth : 0;
+  const alarAsymmetry =
+    faceWidth > 0
+      ? Math.abs(perpDistance(L(LM.alaRight), brow, chin) - perpDistance(L(LM.alaLeft), brow, chin)) /
+        faceWidth
+      : 0;
+  const nose = closenessExp(
+    0.65 * noseAxisDeviation + 0.35 * alarAsymmetry,
+    SCALE.nose
+  );
+
+  /* --- 10. Presentation (hair + grooming) --------------------------- */
+  // These come from the pixels, not the landmarks, so they describe how the face
+  // is *presented* in this photograph — hairline coverage, brow definition,
+  // evenness of facial hair, lip line. They are the weakest signals in the
+  // model and carry the smallest weight for that reason.
+  const presentation = clamp01(
+    0.35 * closenessExp((skin.hairCoverage ?? 0) - SCALE.hairCentre, SCALE.hair) +
+      0.25 * closenessExp((skin.browDefinition ?? 0) - SCALE.browCentre, SCALE.brow) +
+      0.25 * closenessExp((skin.facialHair ?? 0) - SCALE.beardCentre, SCALE.beard) +
+      0.15 * closenessExp((skin.lipDefinition ?? 0) - SCALE.lipCentre, SCALE.lip)
   );
 
   /* --- 9. Skin quality --------------------------------------------- */
@@ -413,6 +484,8 @@ export function measure(
       midface,
       goldenRatio,
       definition,
+      nose,
+      presentation,
       skin: skinScore,
     },
     raw: {
@@ -435,6 +508,13 @@ export function measure(
       eyeIntercanthalRatio,
       faceAspectRatio,
       goldenValue,
+      noseAxisDeviation,
+      alarAsymmetry,
+      jawVAngleDeg,
+      hairCoverage: skin.hairCoverage ?? 0,
+      browDefinition: skin.browDefinition ?? 0,
+      facialHair: skin.facialHair ?? 0,
+      lipDefinition: skin.lipDefinition ?? 0,
       skinLuminance: skin.luminance,
       skinVariance: skin.variance,
     },
@@ -559,8 +639,10 @@ export function buildBreakdown(
   const bone = pct(metrics.definition);
   const golden = pct(metrics.goldenRatio);
   const skin = pct(metrics.skin);
+  const nose = pct(metrics.nose);
+  const presentation = pct(metrics.presentation);
   const harmony = pct(
-    (metrics.symmetry + metrics.thirds + metrics.fifths + metrics.goldenRatio) / 4
+    (metrics.symmetry + metrics.thirds + metrics.fifths + metrics.goldenRatio + metrics.nose) / 5
   );
   const lowerThird = pct(
     0.65 * closeness2(raw.lowerThirdShare - 1 / 3, 0.11) +
@@ -681,6 +763,34 @@ export function buildBreakdown(
       tip: "Focal length matters here — a 2× lens from a step back reads truest.",
     },
     {
+      key: "nose",
+      label: "Nose",
+      score: nose,
+      blurb: copy(
+        {
+          high: "The nasal axis sits on the midline and the alae balance either side.",
+          mid: "A slight drift off the midline — common, and usually invisible in real life.",
+          low: "The nose reads off-centre relative to the rest of the face.",
+        },
+        nose
+      ),
+      tip: "Shoot dead-on: a few degrees of head turn fakes nasal drift in any 2D photo.",
+    },
+    {
+      key: "presentation",
+      label: "Hair & Grooming",
+      score: presentation,
+      blurb: copy(
+        {
+          high: "Hairline coverage, brow definition and facial hair all read deliberate.",
+          mid: "Mostly tidy, with one area the camera catches as unfinished.",
+          low: "Hair or facial hair is reading uneven in this frame.",
+        },
+        presentation
+      ),
+      tip: "A clean hairline and an even beard line are the two fastest changes available.",
+    },
+    {
       key: "skinQuality",
       label: "Skin Quality",
       score: skin,
@@ -772,6 +882,8 @@ export function explain(metrics: MetricSet, raw: RawMeasurements): MetricExplana
     row("midface", "Midface", raw.midfaceValue, SCALE.midfaceCentre, SCALE.midface, "ratio"),
     row("goldenRatio", "Golden ratio", raw.goldenValue, 1, 1, "ratio"),
     row("definition", "Bone structure", raw.jawRatio, 0.8, SCALE.jaw, "ratio"),
+    row("nose", "Nose axis", raw.noseAxisDeviation, 0, SCALE.nose, "percent"),
+    row("presentation", "Hair & grooming", raw.hairCoverage, SCALE.hairCentre, SCALE.hair, "ratio"),
     row("skin", "Skin evenness", raw.skinVariance, 0, SCALE.skinEvenness, "percent"),
   ];
 }

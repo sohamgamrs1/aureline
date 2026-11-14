@@ -205,6 +205,115 @@ function patchStats(ctx: CanvasRenderingContext2D, cx: number, cy: number, size:
   return { luminance: mean, variance };
 }
 
+/** Luminance, spread and edge density of a rectangular region. */
+function rectStats(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number
+) {
+  const x = Math.max(0, Math.round(Math.min(x0, x1)));
+  const y = Math.max(0, Math.round(Math.min(y0, y1)));
+  const w = Math.min(ctx.canvas.width - x, Math.round(Math.abs(x1 - x0)));
+  const h = Math.min(ctx.canvas.height - y, Math.round(Math.abs(y1 - y0)));
+  if (w <= 1 || h <= 1) return null;
+
+  const { data } = ctx.getImageData(x, y, w, h);
+  const lum = new Float32Array(w * h);
+  let sum = 0;
+  for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+    const v = (0.2126 * data[i] + 0.7152 * data[i + 1] + 0.0722 * data[i + 2]) / 255;
+    lum[p] = v;
+    sum += v;
+  }
+  const mean = sum / lum.length;
+  let sq = 0;
+  for (let i = 0; i < lum.length; i++) sq += (lum[i] - mean) ** 2;
+  const sd = Math.sqrt(sq / lum.length);
+
+  let edge = 0;
+  let n = 0;
+  for (let yy = 0; yy < h - 1; yy++) {
+    for (let xx = 0; xx < w - 1; xx++) {
+      const i = yy * w + xx;
+      edge += Math.abs(lum[i] - lum[i + 1]) + Math.abs(lum[i] - lum[i + w]);
+      n++;
+    }
+  }
+  return { mean, sd, edge: n ? edge / n : 0, lum };
+}
+
+/**
+ * Presentation signals — hair and grooming, read from pixels rather than
+ * landmarks.
+ *
+ * These describe how the face is *presented in this photograph*, not the person:
+ * how much of the hairline band reads as hair, how defined the brow band is, how
+ * even the beard/jaw-shadow region is, and how much the lip line contrasts.
+ * They are the least reliable signals in the model and are weighted accordingly.
+ */
+function samplePresentation(
+  ctx: CanvasRenderingContext2D,
+  pts: Pixel[],
+  faceWidth: number,
+  skinLuminance: number
+) {
+  const midX = (pts[10].x + pts[152].x) / 2;
+  const faceHeight = Math.hypot(pts[152].x - pts[10].x, pts[152].y - pts[10].y) || 1;
+
+  /* hairline band — just above the top of the forehead */
+  const hair = rectStats(
+    ctx,
+    midX - faceWidth * 0.5,
+    pts[10].y - faceHeight * 0.3,
+    midX + faceWidth * 0.5,
+    pts[10].y + faceHeight * 0.02
+  );
+  let hairCoverage = 0;
+  if (hair) {
+    const threshold = skinLuminance * 0.72;
+    let dark = 0;
+    for (let i = 0; i < hair.lum.length; i++) if (hair.lum[i] < threshold) dark++;
+    hairCoverage = dark / hair.lum.length;
+  }
+
+  /* brow band — glabella down to the upper eyelid, between the outer corners */
+  const irisY = (pts[468].y + pts[473].y) / 2;
+  const browTop = pts[9].y;
+  const brow = rectStats(
+    ctx,
+    Math.min(pts[33].x, pts[133].x),
+    browTop,
+    Math.max(pts[362].x, pts[263].x),
+    browTop + (irisY - browTop) * 0.55
+  );
+  const browDefinition = brow ? Math.min(1, brow.edge / 0.1) : 0;
+
+  /* beard / jaw-shadow region — below the mouth to the chin */
+  const mouthY = (pts[61].y + pts[291].y) / 2;
+  const beard = rectStats(
+    ctx,
+    midX - faceWidth * 0.32,
+    mouthY + faceHeight * 0.1,
+    midX + faceWidth * 0.32,
+    pts[152].y - faceHeight * 0.03
+  );
+  const facialHair = beard ? Math.max(0, 1 - Math.min(1, beard.sd / 0.22)) : 0;
+
+  /* lip line — upper lip to just below the mouth corners */
+  const lip = rectStats(
+    ctx,
+    Math.min(pts[61].x, pts[291].x),
+    pts[13].y,
+    Math.max(pts[61].x, pts[291].x),
+    mouthY + (pts[152].y - mouthY) * 0.08
+  );
+  const lipDefinition = lip ? Math.min(1, Math.abs(lip.mean - skinLuminance) / 0.25) : 0;
+
+  return { hairCoverage, browDefinition, facialHair, lipDefinition };
+}
+
 /**
  * Skin sample: the two cheek patches. Averaging two regions cancels the side of
  * the face that happens to be lit better, which is what makes this stable.
@@ -531,7 +640,9 @@ export async function scanPhoto(dataUrl: string): Promise<ScanOutcome> {
     const height = canvas.height;
     const pts: Pixel[] = face.map((p) => ({ x: p.x * width, y: p.y * height }));
 
-    const skin = sampleSkin(ctx, pts, Math.hypot(pts[454].x - pts[234].x, pts[454].y - pts[234].y));
+    const faceWidthPx = Math.hypot(pts[454].x - pts[234].x, pts[454].y - pts[234].y);
+    const skin = sampleSkin(ctx, pts, faceWidthPx);
+    const presentation = samplePresentation(ctx, pts, faceWidthPx, skin.luminance);
     const sharpness = sharpnessScore(ctx);
     const report = evaluateQuality(pts, { width, height }, {
       brightness: skin.luminance,
@@ -539,7 +650,7 @@ export async function scanPhoto(dataUrl: string): Promise<ScanOutcome> {
     });
     if (!report.ok) return { status: "quality", report };
 
-    const analysis = analyse(pts, width, height, skin);
+    const analysis = analyse(pts, width, height, { ...skin, ...presentation });
 
     return {
       status: "ok",

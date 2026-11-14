@@ -20,6 +20,8 @@ export type MetricKey =
   | "midface"
   | "goldenRatio"
   | "definition"
+  | "nose"
+  | "presentation"
   | "skin";
 
 export type MetricSet = Record<MetricKey, number>;
@@ -59,6 +61,20 @@ export type RawMeasurements = {
   faceAspectRatio: number;
   /** Mean of the four golden-ratio closeness scores, 0..1. */
   goldenValue: number;
+  /** Mean perpendicular drift of the nose axis from the facial midline, ÷ face width. */
+  noseAxisDeviation: number;
+  /** Left/right difference in alar distance from the midline, ÷ face width. */
+  alarAsymmetry: number;
+  /** Interior angle at the chin between the two jaw lines — the V of the lower face. */
+  jawVAngleDeg: number;
+  /** 0..1 — how much of the hairline band reads as hair rather than skin. */
+  hairCoverage: number;
+  /** 0..1 — edge contrast in the brow band. */
+  browDefinition: number;
+  /** 0..1 — evenness of the beard/jaw shadow region. */
+  facialHair: number;
+  /** 0..1 — contrast of the lip line against surrounding skin. */
+  lipDefinition: number;
   /** Mean luminance of the sampled skin patch, 0..1. */
   skinLuminance: number;
   /** Local variance of the sampled skin patch (lower = more even). */
@@ -75,6 +91,8 @@ export type BreakdownKey =
   | "jawline"
   | "boneStructure"
   | "goldenRatio"
+  | "nose"
+  | "presentation"
   | "skinQuality"
   | "harmony";
 
