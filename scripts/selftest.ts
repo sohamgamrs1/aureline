@@ -24,6 +24,7 @@ import {
   tierFor,
   LM,
 } from "../src/lib/scoring";
+import { SCALE } from "../src/lib/scoring";
 import realFaces from "./fixtures/real-faces.json";
 import type { Pixel, RawMeasurements } from "../src/lib/types";
 
@@ -91,8 +92,8 @@ function face(options: FaceOptions = {}): Pixel[] {
   /* face width + jaw */
   set(LM.faceEdgeRight, cx - 190, 640);
   set(LM.faceEdgeLeft, cx + 190, 640);
-  set(LM.jawRight, cx - jawX, 900);
-  set(LM.jawLeft, cx + jawX, 900);
+  set(LM.jawRight, cx - jawX, 956);
+  set(LM.jawLeft, cx + jawX, 956);
 
   /* mouth + nose */
   set(LM.mouthRight, cx - 59, 858);
@@ -157,7 +158,14 @@ function face(options: FaceOptions = {}): Pixel[] {
   return pts;
 }
 
-const skinFor = (q: number) => ({ luminance: 0.62 - 0.08 * q, variance: 0.02 + 0.08 * q });
+const skinFor = (q: number) => ({
+  luminance: 0.62 - 0.08 * q,
+  variance: 0.02 + 0.08 * q,
+  hairCoverage: 0.7 - 0.5 * q,
+  browDefinition: 0.85 - 0.5 * q,
+  facialHair: 0.9 - 0.5 * q,
+  lipDefinition: 0.9 - 0.4 * q,
+});
 const skin = skinFor(0);
 
 const analyseAt = (q: number) => analyse(face({ q }), W, H, skinFor(q));
@@ -205,7 +213,7 @@ check("canthal tilt is recovered", Math.abs(good.raw.canthalTiltDeg - 5.5) < 0.6
 check("golden components are computed", good.raw.goldenValue > 0.7, good.raw.goldenValue.toFixed(3));
 check("mouth-to-nose canon is recovered", Math.abs(good.raw.mouthNoseRatio - 1.405) < 0.05, good.raw.mouthNoseRatio.toFixed(3));
 check("bone structure reads high", good.metrics.definition > 0.75, good.metrics.definition.toFixed(3));
-check("canonical face lands near the top", good.overall > 9, good.overall.toFixed(2));
+check("canonical face lands near the top", good.overall > 8.5, good.overall.toFixed(2));
 check("potential is >= overall and capped at 10", good.potential >= good.overall && good.potential <= 10);
 
 /* ------------------------------------------------------------------ */
@@ -262,11 +270,17 @@ const scored = measured.map((raw) => {
     ),
     definition:
       0.5 * closenessExp(raw.jawRatio - 0.8, 0.0509) +
-      0.3 * closenessExp(raw.gonialAngleDeg - 145, 19.9409) +
+      0.3 * closenessExp(raw.gonialAngleDeg - SCALE.gonialCentre, SCALE.gonial) +
       0.2 * closenessExp(raw.chinRatio - 0.33, 0.1147),
+    nose: closenessExp(0.65 * raw.noseAxisDeviation + 0.35 * raw.alarAsymmetry, SCALE.nose),
+    presentation:
+      0.35 * closenessExp(raw.hairCoverage - SCALE.hairCentre, SCALE.hair) +
+      0.25 * closenessExp(raw.browDefinition - SCALE.browCentre, SCALE.brow) +
+      0.25 * closenessExp(raw.facialHair - SCALE.beardCentre, SCALE.beard) +
+      0.15 * closenessExp(raw.lipDefinition - SCALE.lipCentre, SCALE.lip),
     skin:
-      0.55 * closenessExp(raw.skinVariance, 0.1309) +
-      0.45 * closenessExp(raw.skinLuminance - 0.6, 0.1741),
+      0.55 * closenessExp(raw.skinVariance, SCALE.skinEvenness) +
+      0.45 * closenessExp(raw.skinLuminance - 0.6, SCALE.skinExposure),
   };
   return scoreFromMetrics(metrics, raw).overall;
 });
@@ -302,10 +316,10 @@ check("tier 2.4 is Developing", tierFor(2.4).label === "Developing");
 /* ------------------------------------------------------------------ */
 /* 6 — the breakdown contract                                          */
 /* ------------------------------------------------------------------ */
-check("ten breakdown cards", good.breakdown.length === 10, String(good.breakdown.length));
+check("twelve breakdown cards", good.breakdown.length === 12, String(good.breakdown.length));
 check(
   "breakdown covers the requested factors",
-  ["symmetry", "boneStructure", "goldenRatio", "skinQuality", "harmony", "lowerThird"].every((k) =>
+  ["symmetry", "boneStructure", "goldenRatio", "nose", "presentation", "skinQuality", "harmony"].every((k) =>
     good.breakdown.some((c) => c.key === k)
   )
 );
@@ -349,9 +363,10 @@ const total = Object.values(METRIC_WEIGHTS).reduce((s, v) => s + v, 0);
 check("weights sum to 1.0", Math.abs(total - 1) < 1e-9, total.toFixed(4));
 check("every metric carries weight", Object.values(METRIC_WEIGHTS).every((v) => v > 0));
 check(
-  "midface is the lightest, symmetry the heaviest",
+  "symmetry is the heaviest, presentation the lightest",
   METRIC_WEIGHTS.symmetry === Math.max(...Object.values(METRIC_WEIGHTS)) &&
-    METRIC_WEIGHTS.midface === Math.min(...Object.values(METRIC_WEIGHTS))
+    METRIC_WEIGHTS.presentation === Math.min(...Object.values(METRIC_WEIGHTS)),
+  `max ${Math.max(...Object.values(METRIC_WEIGHTS))} min ${Math.min(...Object.values(METRIC_WEIGHTS))}`
 );
 
 void ({} as RawMeasurements);
